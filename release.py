@@ -48,6 +48,14 @@ class Failed(Exception):
 def run(*args: str, capture: bool = False, check: bool = True) -> str:
     proc = subprocess.run(
         args, cwd=ROOT, text=True, check=False,
+        # UTF-8 explicitly. text=True otherwise decodes with the locale
+        # codepage -- cp949 on a Korean Windows -- and git speaks UTF-8, so a
+        # Korean commit message raised UnicodeDecodeError inside subprocess's
+        # reader thread. That does not surface as a failed command: the
+        # thread dies, the output comes back empty, and the caller carries on
+        # with nothing. It is why the generated release notes said
+        # "변경 내용 없음" over a repository full of commits.
+        encoding="utf-8", errors="replace",
         stdout=subprocess.PIPE if capture else None,
         stderr=subprocess.PIPE if capture else None,
     )
@@ -233,7 +241,19 @@ def publish(tag: str, dry_run: bool) -> None:
         return
 
     run("git", "add", "-A")
-    run("git", "commit", "-m", f"release {tag}")
+    # Only commit if there is something to commit. Everything already
+    # committed, and a version that did not actually change (releasing the
+    # version already in version.py, which is exactly the first-release
+    # case), leaves the tree clean -- and `git commit` treats that as an
+    # error and took the whole release down with it.
+    staged = subprocess.run(
+        ["git", "diff", "--cached", "--quiet"], cwd=ROOT, check=False
+    ).returncode != 0
+    if staged:
+        run("git", "commit", "-m", f"release {tag}")
+        ok("변경사항을 커밋했습니다")
+    else:
+        ok("커밋할 변경 없음 - 태그만 붙입니다")
     run("git", "tag", "-a", tag, "-m", tag)
     run("git", "push")
     run("git", "push", "origin", tag)
