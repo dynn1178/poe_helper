@@ -373,8 +373,15 @@ class GameActions:
             os.execv(sys.executable, [sys.executable] + sys.argv)
             return
 
+        from ..single_instance import RESTART_FLAG
+
+        # The new copy starts while this one is still tearing down, so it has
+        # to be told to wait for the single-instance lock instead of seeing a
+        # duplicate and refusing to run. Filtered first so the flag does not
+        # accumulate across repeated restarts.
+        passthrough = [arg for arg in sys.argv[1:] if arg != RESTART_FLAG]
         subprocess.Popen(
-            [sys.executable, *sys.argv[1:]],
+            [sys.executable, *passthrough, RESTART_FLAG],
             cwd=str(Path(sys.executable).resolve().parent),
             env=updater.child_environment(),
             close_fds=True,

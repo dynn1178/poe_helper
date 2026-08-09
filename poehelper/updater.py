@@ -48,8 +48,17 @@ _HEADERS = {
 }
 
 # Windows process-creation flags: the swap script must survive this process
-# exiting, and must not flash a console window.
-_DETACHED_PROCESS = 0x00000008
+# exiting, and must not show a console window.
+#
+# CREATE_NO_WINDOW *without* DETACHED_PROCESS. The two are documented as
+# mutually exclusive (with CREATE_NEW_CONSOLE), and asking for both does not
+# get you "extra detached" -- it gets you undefined behaviour, which on
+# Windows 11 resolves to a visible PseudoConsoleWindow that the default
+# terminal host then draws on screen. That window, running the wait loop, is
+# the "ping 화면" the user kept seeing.
+#
+# Dropping DETACHED_PROCESS costs nothing: a child does not die with its
+# parent on Windows, so the script still outlives us either way.
 _CREATE_NEW_PROCESS_GROUP = 0x00000200
 _CREATE_NO_WINDOW = 0x08000000
 
@@ -196,7 +205,7 @@ set "SOURCE={source}"
 set /a TRIES=0
 
 :wait
-ping -n 2 127.0.0.1 >nul
+ping -n 2 127.0.0.1 >nul 2>&1
 del "%TARGET%" >nul 2>&1
 set /a TRIES+=1
 if exist "%TARGET%" (
@@ -277,9 +286,7 @@ def install(downloaded: Path) -> None:
             # The cleaned environment has to be handed to cmd.exe, because the
             # exe it starts inherits whatever cmd.exe was given.
             env=child_environment(),
-            creationflags=(
-                _DETACHED_PROCESS | _CREATE_NEW_PROCESS_GROUP | _CREATE_NO_WINDOW
-            ),
+            creationflags=_CREATE_NEW_PROCESS_GROUP | _CREATE_NO_WINDOW,
         )
     except OSError as exc:
         raise UpdateError(f"업데이트를 시작할 수 없습니다.\n{exc}") from exc

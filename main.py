@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 import sys
 
-from poehelper import elevation, paths, version, zone
+from poehelper import elevation, paths, single_instance, version, zone
 from poehelper.config import Config
 from poehelper.flask_timer import FlaskTimer
 from poehelper.gui.app import App
@@ -60,6 +60,16 @@ def main() -> None:
     # done. Anything else continues -- degraded and having said so -- rather
     # than leaving the user with a program that refuses to open at all.
     if elevation.ensure_admin() == elevation.EXIT:
+        return
+
+    # After the elevation hand-off, never before: the unelevated copy exits
+    # immediately once it has launched the elevated one, and if it had taken
+    # the mutex first the elevated copy could arrive while it still held it
+    # and turn itself away.
+    if not single_instance.acquire(
+        handover=single_instance.RESTART_FLAG in sys.argv
+    ):
+        logging.info("exiting: another instance owns the single-instance lock")
         return
 
     config = Config()
