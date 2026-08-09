@@ -219,6 +219,34 @@ start "" "%SOURCE%"
 """
 
 
+def child_environment() -> dict:
+    """``os.environ`` with PyInstaller's bootloader hand-off removed.
+
+    A onefile build unpacks itself into ``%TEMP%\\_MEIxxxxx`` and tells its
+    own second stage where that is through ``_PYI_*`` environment variables.
+    Those are inherited by any process it spawns -- so a *new* copy of the
+    exe launched from the running one sees them, concludes it is already
+    unpacked, skips extraction, and tries to load ``python311.dll`` out of
+    the old process's folder. Which by then has been deleted, because the old
+    process exited. The result is a program that updates itself and then
+    refuses to start:
+
+        Failed to load Python DLL 'C:\\...\\Temp\\_MEI95122\\python311.dll'
+
+    Stripping them makes the new process bootstrap itself from scratch, which
+    is what it is.
+    """
+    import os
+
+    env = os.environ.copy()
+    for key in list(env):
+        # _PYI_* is PyInstaller 6.x; _MEIPASS2 is the 5.x-and-earlier name,
+        # kept so this keeps working if the build ever moves back.
+        if key.startswith("_PYI_") or key == "_MEIPASS2":
+            env.pop(key, None)
+    return env
+
+
 def install(downloaded: Path) -> None:
     """Launch the swap script and return; the caller then exits the app.
 
@@ -246,6 +274,9 @@ def install(downloaded: Path) -> None:
             ["cmd.exe", "/c", str(script)],
             cwd=tempfile.gettempdir(),
             close_fds=True,
+            # The cleaned environment has to be handed to cmd.exe, because the
+            # exe it starts inherits whatever cmd.exe was given.
+            env=child_environment(),
             creationflags=(
                 _DETACHED_PROCESS | _CREATE_NEW_PROCESS_GROUP | _CREATE_NO_WINDOW
             ),

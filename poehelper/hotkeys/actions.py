@@ -15,6 +15,7 @@ import subprocess
 import time
 import tkinter as tk
 import webbrowser
+from pathlib import Path
 from typing import Callable
 
 from .. import calibration, image_search, input_io, toast, zone
@@ -22,6 +23,10 @@ from ..config import GRID_SIZES, Config
 from .toggles import AutoClickToggle, ContinuousKeyToggle
 
 logger = logging.getLogger(__name__)
+
+# Detached so the restarted copy outlives this process exiting.
+_DETACHED_PROCESS = 0x00000008
+_CREATE_NEW_PROCESS_GROUP = 0x00000200
 
 
 class _ClickPacer:
@@ -344,11 +349,44 @@ class GameActions:
 
     # ---- 앱 재시작 (F11, 문제 발생시 수동 복구용) -----------------------
     def restart_app(self) -> None:
+        """Relaunch the program.
+
+        A packaged build starts a fresh process and lets this one exit,
+        rather than ``os.execv``-ing over itself. A onefile exe hands its
+        unpack folder to anything it spawns -- and to anything that replaces
+        its image -- through ``_PYI_*`` environment variables, so a restart
+        that keeps them ends up looking for its DLLs in a folder belonging to
+        the process it replaced. See ``updater.child_environment``.
+
+        Running from source has no unpack folder and no such problem, and
+        execv there keeps the restart to a single process.
+        """
         import os
+        import subprocess
         import sys
 
+        from .. import updater
+
         self.config.save()
-        os.execv(sys.executable, [sys.executable] + sys.argv)
+
+        if not getattr(sys, "frozen", False):
+            os.execv(sys.executable, [sys.executable] + sys.argv)
+            return
+
+        subprocess.Popen(
+            [sys.executable, *sys.argv[1:]],
+            cwd=str(Path(sys.executable).resolve().parent),
+            env=updater.child_environment(),
+            close_fds=True,
+            creationflags=_DETACHED_PROCESS | _CREATE_NEW_PROCESS_GROUP,
+        )
+        # Hand back to the app so the tray icon, hooks and zone tracker are
+        # torn down properly instead of the process just vanishing.
+        exit_app = getattr(self.root, "on_request_exit", None)
+        if callable(exit_app):
+            self.root.after(0, exit_app)
+        else:
+            self.root.after(0, self.root.destroy)
 
     # ---- POE 실행 / 프로그램 경로 실행 ---------------------------------
     def launch_path(self, path: str) -> None:
