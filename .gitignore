@@ -1,0 +1,34 @@
+# Virtual environment (245 MB) -- rebuilt from requirements.txt
+.venv/
+venv/
+env/
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# PyInstaller output (160 MB) -- the exe belongs on a GitHub release, not in
+# the repository. release.py builds it into dist/ and uploads it from there.
+build/
+dist/
+*.manifest
+
+# Runtime state. These are created next to the running program, and
+# config.json in particular holds personal settings (window positions, chat
+# macros, the client log path) that should not be published.
+config.json
+config.json.*
+*.log
+
+# Backups made by the app and by maintenance scripts
+*.bak
+*.bak-*
+
+# OS / editor
+Thumbs.db
+desktop.ini
+.DS_Store
+.vscode/
+.idea/
+*.swp

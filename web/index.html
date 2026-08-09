@@ -1,0 +1,598 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kuan POE Helper — Path of Exile 도우미</title>
+<meta name="description" content="물약 쿨다운 막대, 보관함 자동 정리, 레벨업 루트와 맵 레이아웃 오버레이까지. Path of Exile 한국 서버용 도우미 프로그램.">
+<meta property="og:title" content="Kuan POE Helper">
+<meta property="og:description" content="Path of Exile 플레이를 편하게 만들어주는 단축키·오버레이 도우미">
+<meta property="og:type" content="website">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚡</text></svg>">
+<style>
+  :root{
+    --bg:#0e0e11; --surface:#16161b; --surface-2:#1d1d24; --line:#2a2a33;
+    --text:#f2f2f5; --dim:#9a9aa2; --accent:#39b6ff; --accent-2:#ffb03a;
+    --radius:14px; --max:1120px;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:var(--bg); color:var(--text);
+    font-family:"Pretendard","맑은 고딕","Malgun Gothic",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+    line-height:1.65; -webkit-font-smoothing:antialiased;
+  }
+  a{color:var(--accent); text-decoration:none}
+  a:hover{text-decoration:underline}
+  .wrap{max-width:var(--max); margin:0 auto; padding:0 24px}
+
+  /* ---------- hero ---------- */
+  header{
+    position:relative; overflow:hidden; padding:88px 0 72px;
+    border-bottom:1px solid var(--line);
+    background:
+      radial-gradient(900px 420px at 15% -10%, rgba(57,182,255,.16), transparent 60%),
+      radial-gradient(700px 380px at 90% 0%, rgba(255,176,58,.10), transparent 60%);
+  }
+  .eyebrow{
+    display:inline-block; font-size:.8rem; letter-spacing:.08em; text-transform:uppercase;
+    color:var(--dim); border:1px solid var(--line); border-radius:999px;
+    padding:5px 14px; margin-bottom:22px; background:var(--surface);
+  }
+  h1{font-size:clamp(2.1rem,5.2vw,3.4rem); line-height:1.15; margin:0 0 16px; letter-spacing:-.02em}
+  h1 .accent{
+    background:linear-gradient(92deg,var(--accent),var(--accent-2));
+    -webkit-background-clip:text; background-clip:text; color:transparent;
+  }
+  .lede{font-size:1.12rem; color:var(--dim); max-width:60ch; margin:0 0 34px}
+
+  .cta{display:flex; flex-wrap:wrap; gap:12px; align-items:center}
+  .btn{
+    display:inline-flex; align-items:center; gap:10px; font-weight:600;
+    padding:14px 26px; border-radius:var(--radius); border:1px solid transparent;
+    transition:transform .12s ease, box-shadow .12s ease, background .12s ease;
+  }
+  .btn:hover{text-decoration:none; transform:translateY(-1px)}
+  .btn-primary{
+    background:linear-gradient(92deg,var(--accent),#2b91d6); color:#04121c;
+    box-shadow:0 8px 26px rgba(57,182,255,.26);
+  }
+  .btn-primary:hover{box-shadow:0 12px 32px rgba(57,182,255,.36)}
+  .btn-ghost{background:var(--surface); border-color:var(--line); color:var(--text)}
+  .btn-ghost:hover{background:var(--surface-2)}
+  .meta{margin-top:16px; font-size:.9rem; color:var(--dim)}
+  .meta b{color:var(--text); font-weight:600}
+
+  /* ---------- sections ---------- */
+  section{padding:76px 0; border-bottom:1px solid var(--line)}
+  h2{font-size:clamp(1.5rem,3vw,2rem); margin:0 0 10px; letter-spacing:-.01em}
+  .sub{color:var(--dim); margin:0 0 40px; max-width:62ch}
+
+  /* ---------- feature rows (screenshot + text) ---------- */
+  .feature{
+    display:grid; grid-template-columns:minmax(0,1.05fr) minmax(0,1fr);
+    gap:44px; align-items:center; margin-bottom:64px;
+  }
+  .feature:last-child{margin-bottom:0}
+  .feature:nth-child(even) .shot{order:2}
+  .feature h3{font-size:1.3rem; margin:0 0 10px; letter-spacing:-.01em}
+  .feature p{color:var(--dim); margin:0 0 14px}
+  .feature ul{margin:0; padding-left:18px; color:var(--dim); font-size:.95rem}
+  .feature li{margin:6px 0}
+  .tag{
+    display:inline-block; font-size:.72rem; letter-spacing:.06em; text-transform:uppercase;
+    color:var(--accent); border:1px solid rgba(57,182,255,.3); background:rgba(57,182,255,.08);
+    border-radius:999px; padding:3px 11px; margin-bottom:12px;
+  }
+
+  /* A frame that looks deliberate whether or not the image is there yet. */
+  .shot{
+    background:var(--surface); border:1px solid var(--line); border-radius:var(--radius);
+    padding:14px; display:flex; align-items:center; justify-content:center;
+    min-height:150px; position:relative; overflow:hidden;
+  }
+  .shot img{
+    max-width:100%; height:auto; display:block; border-radius:8px;
+    image-rendering:-webkit-optimize-contrast;
+  }
+  .shot .missing{
+    color:#6a6a74; font-size:.85rem; text-align:center; padding:34px 16px; line-height:1.7;
+  }
+  .shot .missing code{
+    display:block; margin-top:8px; color:#8a8a95; font-size:.78rem;
+    font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  }
+  .shot.tight{background:#0b0b0e}
+
+  /* ---------- small cards ---------- */
+  .grid{display:grid; grid-template-columns:repeat(auto-fit,minmax(280px,1fr)); gap:18px}
+  .card{
+    background:var(--surface); border:1px solid var(--line); border-radius:var(--radius);
+    padding:24px 22px;
+  }
+  .card .icon{font-size:1.4rem; line-height:1; margin-bottom:12px; display:block}
+  .card h3{margin:0 0 8px; font-size:1.02rem}
+  .card p{margin:0; color:var(--dim); font-size:.93rem}
+
+  ol.steps{counter-reset:s; list-style:none; padding:0; margin:0; display:grid; gap:14px}
+  ol.steps li{
+    counter-increment:s; position:relative; padding:18px 22px 18px 62px;
+    background:var(--surface); border:1px solid var(--line); border-radius:var(--radius);
+  }
+  ol.steps li::before{
+    content:counter(s); position:absolute; left:22px; top:18px;
+    width:26px; height:26px; border-radius:50%; display:grid; place-items:center;
+    background:var(--accent); color:#04121c; font-weight:700; font-size:.85rem;
+  }
+  ol.steps b{display:block; margin-bottom:2px}
+  ol.steps span{color:var(--dim); font-size:.94rem}
+
+  .notice{
+    background:var(--surface); border:1px solid var(--line);
+    border-left:3px solid var(--accent-2); border-radius:10px;
+    padding:18px 22px; color:var(--dim); font-size:.94rem;
+  }
+  .notice b{color:var(--text)}
+  .notice ul{margin:10px 0 0; padding-left:20px}
+  .notice li{margin:5px 0}
+
+  footer{padding:44px 0 60px; color:var(--dim); font-size:.9rem}
+  .footer-row{display:flex; flex-wrap:wrap; gap:18px; justify-content:space-between; align-items:center}
+
+  @media (max-width:820px){
+    .feature{grid-template-columns:1fr; gap:22px; margin-bottom:48px}
+    .feature:nth-child(even) .shot{order:0}
+  }
+  @media (max-width:640px){
+    header{padding:64px 0 54px}
+    section{padding:56px 0}
+    .btn{width:100%; justify-content:center}
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap">
+    <span class="eyebrow">Path of Exile · 한국 서버</span>
+    <h1>플레이에 집중하도록,<br><span class="accent">Kuan POE Helper</span></h1>
+    <p class="lede">
+      물약 쿨다운을 곁눈질로 확인하고, 검색한 아이템만 골라 옮기고, 지금 있는 지역의
+      레벨업 루트와 맵 지형을 화면 위에서 바로 봅니다. 설치 없이 실행 파일 하나로 동작합니다.
+    </p>
+
+    <div class="cta">
+      <a class="btn btn-primary" id="download"
+         href="https://github.com/dynn1178/poe_helper/releases/latest/download/KuanPoeHelper.exe">
+        ⬇ 최신 버전 다운로드
+      </a>
+      <a class="btn btn-ghost" href="https://github.com/dynn1178/poe_helper/releases/latest">
+        릴리즈 노트 보기
+      </a>
+      <a class="btn btn-ghost" href="https://github.com/dynn1178/poe_helper">GitHub</a>
+    </div>
+
+    <p class="meta" id="release-meta">
+      Windows 10 / 11 · 관리자 권한 필요 · 별도 설치 과정 없음
+    </p>
+  </div>
+</header>
+
+<!-- ======================= in-game overlays ======================= -->
+<section id="overlay">
+  <div class="wrap">
+    <h2>게임 화면 위에서 바로</h2>
+    <p class="sub">
+      창을 따로 띄워 확인하는 게 아니라, 보고 있던 자리에 필요한 것만 얹습니다.
+      전부 위치·크기·투명도를 직접 정할 수 있고, 클릭은 그대로 게임에 전달됩니다.
+    </p>
+
+    <div class="feature">
+      <div class="shot tight">
+        <img src="shots/flask-bars.png" alt="물약 쿨다운 막대" loading="lazy">
+      </div>
+      <div>
+        <span class="tag">오버레이</span>
+        <h3>물약 쿨다운 막대</h3>
+        <p>물약을 쓰면 남은 시간이 줄어드는 막대가 뜹니다. 숫자를 읽지 않고 곁눈질로 파악하도록 만들었습니다.</p>
+        <ul>
+          <li>슬롯마다 쿨다운을 따로 지정</li>
+          <li>막대 색상·투명도·위치·크기 조절</li>
+          <li>은신처에서는 자동으로 숨김 — 채팅으로 <code>12345</code>를 칠 때 뜨지 않도록</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="feature">
+      <div class="shot tight">
+        <img src="shots/skill-bars.png" alt="스킬 쿨다운 막대" loading="lazy">
+      </div>
+      <div>
+        <span class="tag">오버레이</span>
+        <h3>스킬 쿨다운 막대</h3>
+        <p>Q·W·E·R·T 스킬도 같은 방식으로. 물약과는 별개의 막대라서 HUD의 다른 자리에 따로 놓을 수 있습니다.</p>
+        <ul>
+          <li>물약과 독립된 위치·색상 설정</li>
+          <li>긴 쿨다운 스킬(소환수, 이동기)에 특히 유용</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="feature">
+      <div class="shot">
+        <img src="shots/map-layout.png" alt="맵 레이아웃 오버레이" loading="lazy">
+      </div>
+      <div>
+        <span class="tag">오버레이</span>
+        <h3>맵 레이아웃</h3>
+        <p>지금 들어온 지역의 지형 그림이 자동으로 뜹니다. 지역 이름은 게임 로그에서 읽으므로 이동하면 그림도 알아서 바뀝니다.</p>
+        <ul>
+          <li>액트 1~10, 100개 지역 수록</li>
+          <li>마우스를 올렸을 때만 조절 UI가 나타나고, 치우면 그림만 남음</li>
+          <li>모서리를 끌어 크기 조절, 아무 곳이나 끌어 이동</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="feature">
+      <div class="shot">
+        <img src="shots/route-window.png" alt="레벨업 루트 창" loading="lazy">
+      </div>
+      <div>
+        <span class="tag">오버레이</span>
+        <h3>레벨업 루트</h3>
+        <p>액트 1~10 루트를 화면 한쪽에 띄워두고 따라갑니다. 지역을 옮기면 해당 단계로 알아서 넘어갑니다.</p>
+        <ul>
+          <li>마지막으로 보던 줄을 기억 — 다시 열면 이어서</li>
+          <li>액트 선택·검색·복사, 내용 직접 편집</li>
+          <li>게임 위에 오래 떠 있는 창이라 어두운 테마</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ======================= stash ======================= -->
+<section id="stash">
+  <div class="wrap">
+    <h2>보관함 정리, 한 번에</h2>
+    <p class="sub">
+      게임 검색창에 입력하면 해당 아이템에 테두리가 생깁니다. 그 테두리를 화면에서 직접 읽어,
+      <b>검색된 것만</b> 골라 Ctrl+클릭으로 옮깁니다.
+    </p>
+
+    <div class="feature">
+      <div class="shot">
+        <img src="shots/stash_inventory.gif" alt="검색한 아이템만 인벤토리로 가져오는 모습" loading="lazy">
+      </div>
+      <div>
+        <span class="tag">보관함 → 인벤토리</span>
+        <h3>검색한 아이템만 가져오기</h3>
+        <p>테두리가 생긴 아이템만 차례로 사라지는 것이 보입니다. 강조되지 않은 아이템은 그대로 남습니다.</p>
+        <ul>
+          <li>쿼드 보관함(24×24)과 일반 보관함(12×12) 지원</li>
+          <li>아이템 테두리가 <b>끊기지 않고 이어져 있는지</b>로 판정 — 금색 아이템 그림에 속지 않음</li>
+          <li>1×1부터 2×4까지 모든 크기를 하나의 아이템으로 인식</li>
+          <li>해상도·UI 배율·모니터 감마가 달라도 동작하도록 설계</li>
+          <li>한 번에 30개까지, 클릭 간격은 매번 불규칙</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="feature">
+      <div class="shot">
+        <img src="shots/inventory-stash.gif" alt="인벤토리를 창고로 비우는 모습" loading="lazy">
+      </div>
+      <div>
+        <span class="tag">인벤토리 → 창고</span>
+        <h3>인벤토리 통째로 비우기</h3>
+        <p>단축키 한 번으로 인벤토리 60칸을 순서대로 Ctrl+클릭해 창고로 넘깁니다. 맵 한 판 돌고 온 뒤 정리에.</p>
+        <ul>
+          <li>클릭 간격은 매번 달라지고, 몇 번마다 조금 더 쉬어 갑니다</li>
+          <li>속도는 설정 파일에서 조절 가능</li>
+          <li>인벤토리가 가득 차 더 옮겨지지 않으면 스스로 멈추고 알려줍니다</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="feature">
+      <div class="shot">
+        <img src="shots/autoclick_hold.gif" alt="오토클릭 홀드키로 아이템을 빠르게 옮기는 모습" loading="lazy">
+      </div>
+      <div>
+        <span class="tag">오토클릭 홀드키</span>
+        <h3>누르고 있는 동안 계속 클릭</h3>
+        <p>지정한 키를 누른 채 커서를 훑으면 지나가는 아이템이 차례로 옮겨집니다. 정해진 순서가 아니라
+           원하는 것만 골라 담을 때.</p>
+        <ul>
+          <li>Shift를 함께 누르면 창고 ↔ 인벤토리 이동에도 그대로</li>
+          <li>오작동 방지를 위해 <b>Ctrl 또는 Alt 조합만</b> 지정할 수 있습니다</li>
+          <li><b>반드시 인벤토리·보관함 안에서만</b> — 필드에서 쓰면 입력 과다로 접속이 차단될 수 있습니다</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="feature">
+      <div class="shot">
+        <img src="shots/detect-test.png" alt="검색 인식 테스트 창" loading="lazy">
+      </div>
+      <div>
+        <span class="tag">진단 도구</span>
+        <h3>내 PC에서 제대로 인식되는지 확인</h3>
+        <p>모니터와 해상도는 사람마다 다릅니다. 그래서 값을 추측하지 않고 실제 화면으로 맞출 수 있게 만들었습니다.</p>
+        <ul>
+          <li>보관함을 그대로 캡처해 인식 결과를 그려서 표시</li>
+          <li>칸을 클릭하면 그 칸의 네 변 측정값 표시</li>
+          <li>'색상 마스크 보기'로 테두리가 색으로 잡히는지 확인</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ======================= settings ======================= -->
+<section id="settings">
+  <div class="wrap">
+    <h2>설정은 전부 화면 안에서</h2>
+    <p class="sub">ini 파일을 열 일이 없습니다. 모든 단축키는 원하는 대로 다시 지정할 수 있습니다.</p>
+
+    <div class="feature">
+      <div class="shot">
+        <img src="shots/hotkeys-tab.png" alt="게임 단축키 탭" loading="lazy">
+      </div>
+      <div>
+        <span class="tag">게임 단축키</span>
+        <h3>필요한 동작을 키 하나로</h3>
+        <ul>
+          <li>물약 매크로, 감정 주문서 우클릭, 길드 채팅 열기</li>
+          <li>투겐 흥정, 화폐 반복 사용, CWDT 매크로</li>
+          <li>연속 사용키 토글 — 키 5개를 순서대로, 불규칙한 간격으로</li>
+          <li>오토클릭 홀드키 (Ctrl/Alt 조합만 허용)</li>
+          <li>중복된 단축키는 저장 시 경고</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="feature">
+      <div class="shot">
+        <img src="shots/flask-tab.png" alt="물약 탭" loading="lazy">
+      </div>
+      <div>
+        <span class="tag">물약</span>
+        <h3>물약 매크로와 막대 설정</h3>
+        <ul>
+          <li>사용할 슬롯을 체크하면 순서대로 입력 (사이사이 랜덤 딜레이)</li>
+          <li>6번 슬롯은 원하는 키를 직접 지정</li>
+          <li>쿨다운·색상·투명도·화면 위치를 여기서 한 번에</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="feature">
+      <div class="shot">
+        <img src="shots/chat-macros.png" alt="채팅 매크로 탭" loading="lazy">
+      </div>
+      <div>
+        <span class="tag">채팅 매크로</span>
+        <h3>반복 입력은 매크로로</h3>
+        <ul>
+          <li>거래 응대, 초대, <code>/hideout</code> 같은 문구를 표에서 편집</li>
+          <li>'PoE 명령어에서 추가'로 자주 쓰는 명령을 골라 넣기</li>
+          <li>문구마다 단축키를 따로 지정</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="feature">
+      <div class="shot">
+        <img src="shots/levelup-tab.png" alt="레벨업 탭" loading="lazy">
+      </div>
+      <div>
+        <span class="tag">레벨업</span>
+        <h3>POE1 / POE2 각각</h3>
+        <ul>
+          <li>게임별로 루트와 맵 레이아웃을 따로 관리</li>
+          <li>POE2 맵 레이아웃은 준비 중</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="feature">
+      <div class="shot">
+        <img src="shots/links-tab.png" alt="링크 탭" loading="lazy">
+      </div>
+      <div>
+        <span class="tag">링크 · 메모</span>
+        <h3>자주 쓰는 것들을 한곳에</h3>
+        <ul>
+          <li>poe.ninja, PoE DB, 미궁, 크래프팅 등 기본 링크 10개 내장</li>
+          <li>원하는 사이트를 추가하고 프로그램에서 바로 열기</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="feature">
+      <div class="shot">
+        <img src="shots/memo-tab.png" alt="메모 탭" loading="lazy">
+      </div>
+      <div>
+        <span class="tag">메모</span>
+        <h3>시세·정규식·빌드 링크 메모</h3>
+        <ul>
+          <li>카드를 더블클릭해 내용 편집</li>
+          <li>메모 안의 링크는 즐겨찾기로 등록 가능</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ======================= the rest ======================= -->
+<section id="more">
+  <div class="wrap">
+    <h2>그 밖에</h2>
+    <div class="grid">
+      <div class="card">
+        <span class="icon">📍</span>
+        <h3>지역 자동 감지</h3>
+        <p>클라이언트 로그를 읽어 지금 있는 곳을 판별합니다. 화면 인식이 아니라서 해상도·감마·UI 설정에
+           영향을 받지 않고, 은신처에서는 매크로와 오버레이를 알아서 멈춥니다.</p>
+      </div>
+      <div class="card">
+        <span class="icon">🔄</span>
+        <h3>자동 업데이트</h3>
+        <p>새 버전이 올라오면 알려주고, 확인만 누르면 내려받아 설치한 뒤 자동으로 다시 시작합니다.
+           설정은 그대로 유지됩니다.</p>
+      </div>
+      <div class="card">
+        <span class="icon">🖱️</span>
+        <h3>오버레이는 클릭을 막지 않음</h3>
+        <p>모든 오버레이는 클릭해도 활성화되지 않고, 클릭이 게임으로 그대로 전달됩니다.
+           오버레이 때문에 게임이 키 입력을 놓치는 일이 없습니다.</p>
+      </div>
+      <div class="card">
+        <span class="icon">💾</span>
+        <h3>설정 내보내기 / 가져오기</h3>
+        <p>설정 전체를 파일 하나로 백업하고 다른 PC에서 그대로 불러옵니다.</p>
+      </div>
+      <div class="card">
+        <span class="icon">🎯</span>
+        <h3>좌표 캘리브레이션</h3>
+        <p>보관함·인벤토리 영역을 드래그로 한 번만 지정하면 됩니다. 점선 격자가 실제 칸과 겹치도록
+           방향키로 1px씩 미세 조정할 수 있습니다.</p>
+      </div>
+      <div class="card">
+        <span class="icon">📦</span>
+        <h3>설치 없음 · 포터블</h3>
+        <p>실행 파일 하나. 설정과 메모는 그 옆에 저장되므로 폴더째 옮기면 그대로 따라갑니다.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="start">
+  <div class="wrap">
+    <h2>시작하기</h2>
+    <p class="sub">내려받아 실행하면 끝입니다. 설치 마법사도, 레지스트리도 건드리지 않습니다.</p>
+    <ol class="steps">
+      <li><b>실행 파일을 내려받습니다</b>
+        <span>위의 다운로드 버튼을 누르면 항상 가장 최신 릴리즈를 받게 됩니다.</span></li>
+      <li><b>원하는 폴더에 두고 실행합니다</b>
+        <span>설정과 메모는 실행 파일 옆에 저장되므로, 폴더째 옮기면 그대로 따라갑니다.</span></li>
+      <li><b>관리자 권한을 허용합니다</b>
+        <span>게임이 관리자 권한으로 돌아가기 때문에, 같은 권한이 아니면 키 입력이 전달되지 않습니다.</span></li>
+      <li><b>좌표를 한 번 맞춥니다</b>
+        <span>보관함 정리처럼 화면을 클릭하는 기능은 '좌표 캘리브레이션' 탭에서 영역을 한 번만 지정하면 됩니다.</span></li>
+    </ol>
+
+    <div class="notice" style="margin-top:26px">
+      <b>알아두면 좋은 점</b>
+      <ul>
+        <li>Windows 10 / 11 64비트에서 동작합니다.</li>
+        <li>오버레이가 보이려면 게임을 <b>전체 화면 창 모드</b>로 실행해 주세요. 전용 전체 화면에서는 어떤 오버레이도 표시되지 않습니다.</li>
+        <li>오토클릭은 반드시 인벤토리·보관함 안에서만 사용하세요. 필드에서 쓰면 입력 과다로 접속이 차단될 수 있습니다.</li>
+        <li>처음 실행할 때 백신이 경고할 수 있습니다. 키보드 후킹을 사용하는 프로그램에서 흔한 오탐입니다.</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap footer-row">
+    <div>Kuan POE Helper · 개인 제작 도구</div>
+    <div>
+      <a href="https://github.com/dynn1178/poe_helper">소스 코드</a> ·
+      <a href="https://github.com/dynn1178/poe_helper/issues">문제 신고</a> ·
+      <a href="https://github.com/dynn1178/poe_helper/releases">전체 릴리즈</a>
+    </div>
+  </div>
+</footer>
+
+<script>
+// The download button already points at GitHub's permanent "latest release
+// asset" URL, so it never needs updating. This only fills in the version and
+// size next to it, and silently leaves the static text alone if the API is
+// unreachable or rate-limited -- the page must never depend on this call.
+(function () {
+  var API = "https://api.github.com/repos/dynn1178/poe_helper/releases/latest";
+  var ASSET = "KuanPoeHelper.exe";
+  fetch(API, { headers: { Accept: "application/vnd.github+json" } })
+    .then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); })
+    .then(function (data) {
+      var parts = [];
+      if (data.tag_name) parts.push("<b>" + data.tag_name + "</b>");
+      var asset = (data.assets || []).filter(function (a) { return a.name === ASSET; })[0];
+      if (asset && asset.size) parts.push((asset.size / 1048576).toFixed(1) + " MB");
+      if (data.published_at) {
+        parts.push(new Date(data.published_at).toLocaleDateString("ko-KR"));
+      }
+      if (!parts.length) return;
+      document.getElementById("release-meta").innerHTML =
+        parts.join(" · ") + " &nbsp;·&nbsp; Windows 10 / 11 · 관리자 권한 필요";
+    })
+    .catch(function () { /* keep the static fallback text */ });
+})();
+
+// Each slot takes whichever format actually exists, so an animated capture
+// can be dropped in as flask-bars.gif with no edit here: the markup names a
+// .png, and if that 404s the same basename is retried as .gif, .webp and
+// finally .mp4 (which becomes a looping muted <video> -- an animation of a
+// UI is several times smaller as h264 than as GIF).
+//
+// If none of them are there the slot becomes a labelled placeholder rather
+// than a broken-image icon, so the page stays presentable while shots/ is
+// still being filled in.
+(function () {
+  var ORDER = ["png", "gif", "webp", "mp4"];
+
+  function placeholder(box, label, base) {
+    var ph = document.createElement("div");
+    ph.className = "missing";
+    ph.innerHTML = label + "<code>web/" + base + ".png / .gif 없음</code>";
+    box.appendChild(ph);
+  }
+
+  document.querySelectorAll(".shot img").forEach(function (img) {
+    var src = img.getAttribute("src");
+    var base = src.replace(/\.[a-z0-9]+$/i, "");
+    var current = (src.match(/\.([a-z0-9]+)$/i) || [null, "png"])[1].toLowerCase();
+    var queue = [current].concat(ORDER.filter(function (e) { return e !== current; }));
+    var label = img.alt || "스크린샷";
+    var box = img.parentElement;
+    var at = 0;
+
+    function next() {
+      at += 1;
+      if (at >= queue.length) {
+        if (img.parentElement) img.remove();
+        placeholder(box, label, base);
+        return;
+      }
+      var ext = queue[at];
+      if (ext !== "mp4") {
+        img.src = base + "." + ext;
+        return;
+      }
+      // Last resort: a video, which needs a different element entirely.
+      if (img.parentElement) img.remove();
+      var video = document.createElement("video");
+      video.src = base + ".mp4";
+      video.autoplay = video.muted = video.loop = video.playsInline = true;
+      video.setAttribute("muted", "");        // Safari wants the attribute too
+      video.setAttribute("playsinline", "");
+      video.setAttribute("aria-label", label);
+      video.style.maxWidth = "100%";
+      video.style.borderRadius = "8px";
+      video.addEventListener("error", function () {
+        video.remove();
+        placeholder(box, label, base);
+      });
+      box.appendChild(video);
+    }
+
+    img.addEventListener("error", next);
+  });
+})();
+</script>
+</body>
+</html>
