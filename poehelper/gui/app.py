@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import os
 import threading
 import tkinter as tk
 from datetime import datetime
@@ -1345,14 +1346,27 @@ class App(ctk.CTk):
             return
         UpdateDialog(self, self.config, release)
 
+    # How long the clean shutdown gets before the process is ended outright.
+    _UPDATE_EXIT_GRACE_SEC = 1.5
+
     def finish_update_and_restart(self) -> None:
         """Shut down so the waiting swap script can replace the exe.
 
         Called by the update dialog once the installer is staged. The script
-        polls until this process lets go of its own executable, so the only
-        thing that matters here is exiting promptly and cleanly.
+        is already polling for this process to let go of its own executable,
+        so exiting is not optional here -- if it does not happen the update
+        silently never occurs while a hidden script retries for half a minute
+        and then gives up.
+
+        And it can fail to happen: pystray starts its tray thread *without*
+        ``daemon=True`` (pystray/_win32.py), so a tray icon that does not come
+        down cleanly leaves the interpreter waiting on that thread after the
+        Tk loop has ended -- a process with no window that never exits. The
+        timer below makes that impossible. It is a real thread rather than
+        ``after()`` because the event loop is about to stop.
         """
         self.config.save()
+        threading.Timer(self._UPDATE_EXIT_GRACE_SEC, lambda: os._exit(0)).start()
         if self.on_request_exit is not None:
             self.on_request_exit()
         else:
