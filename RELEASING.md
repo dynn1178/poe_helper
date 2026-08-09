@@ -1,5 +1,9 @@
 # 배포 절차
 
+> 명령은 **Windows PowerShell** 기준입니다.
+> PowerShell 5.1에는 `&&` / `||` 가 없으므로 (`'&&' 토큰은 이 버전에서 올바른 문
+> 구분 기호가 아닙니다` 오류) 명령을 한 줄씩 실행하세요.
+
 새 버전을 사용자에게 전달하는 전체 과정입니다.
 
 프로그램·업데이터·다운로드 페이지 세 곳이 **같은 이름과 버전**을 전제로 맞물려 있어서,
@@ -9,7 +13,7 @@
 
 ## 한 번만 해두면 되는 준비
 
-```bash
+```powershell
 # 1) 저장소 연결 (아직 git 저장소가 아니라면)
 git init
 git branch -M main
@@ -33,7 +37,7 @@ pip install -r requirements.txt
 
 ## 배포하기
 
-```bash
+```powershell
 .venv\Scripts\activate
 python release.py 1.1.0
 ```
@@ -52,7 +56,7 @@ python release.py 1.1.0
 
 먼저 확인만 하고 싶으면:
 
-```bash
+```powershell
 python release.py --check          # 검사만
 python release.py 1.1.0 --dry-run  # 빌드까지 하고 푸시/업로드는 안 함
 ```
@@ -111,8 +115,10 @@ python release.py 1.1.0 --dry-run  # 빌드까지 하고 푸시/업로드는 안
 
 `web/` 안의 내용은 릴리즈와 무관합니다. 푸시하면 Vercel이 바로 반영합니다.
 
-```bash
-git add web/ && git commit -m "docs: 소개 페이지 수정" && git push
+```powershell
+git add web/
+git commit -m "docs: 소개 페이지 수정"
+git push
 ```
 
 스크린샷 추가는 `web/shots/README.md`를 참고하세요.
@@ -131,7 +137,7 @@ git add web/ && git commit -m "docs: 소개 페이지 수정" && git push
 
 잘못 올린 릴리즈 되돌리기:
 
-```bash
+```powershell
 gh release delete v1.1.0 --yes
 git push --delete origin v1.1.0
 git tag -d v1.1.0
