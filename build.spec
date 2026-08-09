@@ -11,10 +11,21 @@ from PyInstaller.utils.hooks import collect_data_files
 
 block_cipher = None
 
+from pathlib import Path
+
 datas = [
     ("resources", "resources"),
-    ("data", "data"),
     ("act_layout", "act_layout"),  # per-zone map layouts for the overlay
+]
+
+# data/ listed file by file rather than as a folder, so the backups the app
+# and its maintenance scripts leave behind (list.csv.bak-*) are not shipped
+# to users. Naming the folder bundles whatever happens to be sitting in it,
+# and one such backup was already inside a build before this was noticed.
+datas += [
+    (str(path), "data")
+    for path in sorted(Path("data").iterdir())
+    if path.is_file() and ".bak" not in path.name
 ]
 datas += collect_data_files("customtkinter")  # bundles its theme JSON files
 
