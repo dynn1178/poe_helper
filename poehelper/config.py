@@ -16,28 +16,27 @@ from typing import Any, Callable
 
 from . import paths
 
-# Default chat macros: the 12 that were actually wired to a hotkey in the
-# original AHK script (Alt+1~4, F1~8), plus the 4 trade-reply phrases that
-# existed in setting.ini's Text22/33/44/55 fields but were never bound to a
-# hotkey there (dead GUI fields) -- their content is real and useful, so they
-# get finished here with Alt+5~8.
+# Default chat macros. Bound phrases first, unbound after -- the same order the 저장 button now
+# enforces (MacroTableEditor.sort_unbound_last). No "name" field: the editor
+# only ever reads and writes hotkey/text, so a name here was never shown
+# anywhere and was dropped the first time the table was saved.
 DEFAULT_MACROS = [
-    {"name": "인사", "hotkey": "alt+1", "text": "&Hello " * 18},
-    {"name": "안녕", "hotkey": "alt+2", "text": "&Bye " * 28},
-    {"name": "감사", "hotkey": "alt+3", "text": "Thank you Exile."},
-    {"name": "환영", "hotkey": "alt+4", "text": "&Come in " * 24},
-    {"name": "귓말감사", "hotkey": "alt+5", "text": "@last ty"},
-    {"name": "초대", "hotkey": "alt+6", "text": "/invite @last"},
-    {"name": "거래신청", "hotkey": "alt+7", "text": "/tradewith @last"},
-    {"name": "거처초대", "hotkey": "alt+8", "text": "/hideout @last"},
-    {"name": "종료", "hotkey": "f1", "text": "/exit"},
-    {"name": "남은시간", "hotkey": "f2", "text": "/remaining"},
-    {"name": "패시브", "hotkey": "f3", "text": "/passives"},
-    {"name": "퇴장", "hotkey": "f4", "text": "/leave"},
-    {"name": "거처", "hotkey": "f5", "text": "/hideout"},
-    {"name": "방해금지", "hotkey": "f6", "text": "/dnd"},
-    {"name": "사망수", "hotkey": "f7", "text": "/deaths"},
-    {"name": "킹스마치", "hotkey": "f8", "text": "/kingsmarch"},
+    {"hotkey": "alt+f1", "text": "&Hello " * 18},
+    {"hotkey": "alt+f2", "text": "&Bye " * 28},
+    {"hotkey": "alt+5", "text": "@last ty"},
+    {"hotkey": "alt+6", "text": "/invite @last"},
+    {"hotkey": "alt+7", "text": "/tradewith @last"},
+    {"hotkey": "alt+8", "text": "/hideout @last"},
+    {"hotkey": "f3", "text": "Thank you Exile."},
+    {"hotkey": "f4", "text": "/leave"},
+    {"hotkey": "f5", "text": "/hideout"},
+    {"hotkey": "f6", "text": "/kingsmarch"},
+    {"hotkey": "", "text": "/exit"},
+    {"hotkey": "", "text": "/remaining"},
+    {"hotkey": "", "text": "/deaths"},
+    {"hotkey": "", "text": "dnd"},
+    {"hotkey": "", "text": "/played"},
+    {"hotkey": "", "text": "/passives"},
 ]
 
 DEFAULT_LINKS = [
@@ -71,11 +70,11 @@ DEFAULT_HOTKEYS = {
     "minefield_hold": "tab",
     "autoclick_hold": "ctrl+capslock",
     "search_paste": "alt+f",
-    # f11, not f8: the default chat macros already claim f1-f8, and f11 came
-    # free when restart_app stopped being a hotkey.
-    "quad_stash_pull_filtered": "f11",
-    "inventory_pull_filtered": "f9",
-    "stash_dump_all": "f10",
+    # f9/f10/f11 in stash-order (쿼드 -> 일반 -> 인벤토리 비우기) so the three
+    # transfer keys sit next to each other in the order they are used.
+    "quad_stash_pull_filtered": "f9",
+    "inventory_pull_filtered": "f10",
+    "stash_dump_all": "f11",
     "show_image_1": "ctrl+num 1",
     "show_image_2": "ctrl+num 2",
     "show_image_3": "ctrl+num 3",
@@ -99,11 +98,11 @@ SKILL_KEYS = ["q", "w", "e", "r", "t"]
 DEFAULTS: dict[str, Any] = {
     "windows": {
         "main": {"x": 100, "y": 100},
-        # 560 wide because that is what the route window's one-row toolbar
-        # actually measures (step arrows, act menu, search, 찾기/복사/편집,
-        # 자동, opacity, close). At the old 460 the row overflowed and the
-        # last controls packed into it were squeezed to a few pixels.
-        "route_poe1": {"x": 120, "y": 120, "w": 560, "h": 300, "alpha": 1.0},
+        # Wider than the 560 the toolbar needs, and short enough to show
+        # about three route lines -- the shape it actually gets used in.
+        # (560 is the floor: below that the one-row toolbar starts losing
+        # controls off the right edge. See route_window._MIN_W.)
+        "route_poe1": {"x": 120, "y": 120, "w": 789, "h": 120, "alpha": 1.0},
         "route_poe2": {"x": 140, "y": 140, "w": 560, "h": 300, "alpha": 1.0},
         # Map-layout overlay: sized from the picture it shows, so it stores a
         # scale factor rather than a width/height.
@@ -116,21 +115,21 @@ DEFAULTS: dict[str, Any] = {
     "flask": {
         "checkboxes": [True, True, True, True, True, False],
         "custom_key": "w",
-        "cooldowns_ms": [0, 0, 0, 0, 0],
+        "cooldowns_ms": [2000, 2000, 2000, 2000, 2000],
         "anchor_left": None,   # {"x":.., "y":..} - legacy 2-point placement
         "anchor_right": None,  # kept so an old config still upgrades cleanly
         "overlay_enabled": True,
         # Drag-sized bar-graph area; supersedes anchor_left/right above.
         "overlay_rect": None,  # {"x1":.., "y1":.., "x2":.., "y2":..}
-        "bar_color": "#39b6ff",
+        "bar_color": "#009900",
         "overlay_alpha": 0.85,
     },
     # Q/W/E/R/T skill cooldowns, drawn as their own bar graph in their own
     # place on screen -- flasks and skills sit in different parts of the HUD,
     # so one shared overlay position could never suit both.
     "skills": {
-        "cooldowns_ms": [0, 0, 0, 0, 0],  # q, w, e, r, t
-        "overlay_enabled": False,
+        "cooldowns_ms": [20000, 30000, 0, 0, 0],  # q, w, e, r, t
+        "overlay_enabled": True,
         "overlay_rect": None,
         "bar_color": "#ffb03a",
         "overlay_alpha": 0.85,
@@ -159,7 +158,7 @@ DEFAULTS: dict[str, Any] = {
     # 캘리브레이션 tab's 검색 인식 테스트 window edits these against a real
     # screenshot rather than by guesswork. See image_search.py.
     "detection": {
-        "edge_coverage": 0.60,   # how much of a cell edge must be highlight
+        "edge_coverage": 0.85,   # how much of a cell edge must be highlight
         "min_edges": 2,          # how many of the 4 edges must qualify
         "scan_px": 4,            # +-px to sweep, absorbs calibration drift
         # Sides of the *item* rectangle that must be framed. 4 is ideal

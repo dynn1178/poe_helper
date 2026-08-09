@@ -53,11 +53,14 @@ def main() -> None:
         sys.executable,
     )
 
-    if not elevation.ensure_admin():
-        # ensure_admin() already triggered a relaunch-as-admin when running
-        # from source; the packaged EXE's manifest handles this instead.
-        if not getattr(sys, "frozen", False):
-            return
+    # Elevation is not optional: unelevated, Windows' UIPI drops every
+    # synthetic keystroke this app sends to the (elevated) game, so the
+    # hotkeys appear to fire and nothing happens. ensure_admin() re-launches
+    # elevated when it can; EXIT means that copy is starting and this one is
+    # done. Anything else continues -- degraded and having said so -- rather
+    # than leaving the user with a program that refuses to open at all.
+    if elevation.ensure_admin() == elevation.EXIT:
+        return
 
     config = Config()
     elevation.check_game_outranks_us(config.data["misc"].get("poe_window_class", ""))

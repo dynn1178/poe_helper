@@ -72,5 +72,29 @@ FONT_SMALL = (FONT_FAMILY, 10)
 FONT_MONO = ("Consolas", 10)
 
 
+def apply_tk_fonts(root) -> None:
+    """Point Tk's named fonts at FONT_FAMILY.
+
+    CustomTkinter widgets take their family from ThemeManager (set in
+    gui/app.py), but plain Tk widgets do not -- they fall back to
+    ``TkDefaultFont``, which is Segoe UI on Windows. The app uses both kinds
+    side by side (drag grips, preview labels, text areas, message boxes), so
+    without this two different families end up on the same row.
+
+    ``TkFixedFont`` is deliberately left alone: the things that use it want a
+    monospace face, and 맑은 고딕 is not one.
+    """
+    import tkinter.font as tkfont
+
+    for name in (
+        "TkDefaultFont", "TkTextFont", "TkMenuFont", "TkHeadingFont",
+        "TkCaptionFont", "TkSmallCaptionFont", "TkIconFont", "TkTooltipFont",
+    ):
+        try:
+            tkfont.nametofont(name, root=root).configure(family=FONT_FAMILY)
+        except Exception:  # noqa: BLE001 - a missing named font is not fatal
+            continue
+
+
 def theme_path() -> Path:
     return paths.resource_path("apple_theme.json")

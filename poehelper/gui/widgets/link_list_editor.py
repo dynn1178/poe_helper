@@ -13,6 +13,7 @@ from typing import Callable
 import customtkinter as ctk
 
 from .. import theme
+from .reorder import DragReorder
 from .tooltip import Tooltip
 
 
@@ -45,6 +46,13 @@ class LinkListEditor(ctk.CTkFrame):
 
         self.scroll = ctk.CTkScrollableFrame(self, height=220)
         self.scroll.pack(fill="both", expand=True)
+        self._drag = DragReorder(
+            rows=self.rows,
+            widget_of=lambda entry: entry[0],
+            repack=self._repack,
+            on_drop=self._notify,
+            scroll_canvas=self.scroll._parent_canvas,
+        )
         # Silent while restoring saved links: _add_row() notifies on every
         # row, and the tab's on_change writes config.json and fans out to
         # every config listener (which re-registers all global hotkeys).
@@ -74,6 +82,10 @@ class LinkListEditor(ctk.CTkFrame):
         name_var = ctk.StringVar(value=name)
         url_var = ctk.StringVar(value=url)
         entry = [row, name_var, url_var]
+
+        # The list order is the button order in the tab, so rows are
+        # draggable by this grip.
+        self._drag.handle(row, entry).pack(side="left", padx=(0, 2))
 
         ctk.CTkEntry(row, textvariable=name_var, width=90, placeholder_text="이름").pack(
             side="left", padx=(0, 4)
@@ -114,6 +126,17 @@ class LinkListEditor(ctk.CTkFrame):
         entry[0].destroy()
         self.rows.remove(entry)
         self._notify()
+
+    def _repack(self) -> None:
+        """Re-lay the rows in ``self.rows`` order.
+
+        pack() only appends, so a reorder means forgetting every row and
+        adding them back in the new order.
+        """
+        for entry in self.rows:
+            entry[0].pack_forget()
+        for entry in self.rows:
+            entry[0].pack(fill="x", pady=2)
 
     def get_links(self) -> list[dict]:
         return [

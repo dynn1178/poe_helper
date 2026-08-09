@@ -214,6 +214,10 @@ class App(ctk.CTk):
         # Alpha 0 keeps the window mapped -- geometry is computed for real
         # -- while still being invisible until we're ready to reveal it.
         self.attributes("-alpha", 0.0)
+        # Before any widget is built: plain Tk widgets read their family from
+        # the named fonts, and CustomTkinter ones from ThemeManager. Both have
+        # to say 맑은 고딕 or the two families appear side by side.
+        theme.apply_tk_fonts(self)
         self.config = config
         self.hotkey_manager = hotkey_manager
         self.actions = actions
@@ -387,15 +391,21 @@ class App(ctk.CTk):
 
     # ---- tab: 채팅 매크로 -----------------------------------------------
     def _build_macro_tab(self, tab: ctk.CTkFrame) -> None:
-        self._build_save_row(tab)
-
         def on_change(macros: list[dict]) -> None:
             self.config.data["chat_macros"] = macros
             self.config.save()
 
-        MacroTableEditor(tab, self.config.data["chat_macros"], on_change=on_change).pack(
-            fill="both", expand=True, padx=8, pady=8
+        def on_save() -> None:
+            # Sinking the keyless rows is part of what 저장 means here, so it
+            # happens before the write rather than as a separate button.
+            self.macro_editor.sort_unbound_last()
+            self.config.save()
+
+        self._build_save_row(tab, on_save)
+        self.macro_editor = MacroTableEditor(
+            tab, self.config.data["chat_macros"], on_change=on_change
         )
+        self.macro_editor.pack(fill="both", expand=True, padx=8, pady=8)
 
     # ---- tab: 물약 -----------------------------------------------------
     def _build_flask_tab(self, tab: ctk.CTkFrame) -> None:

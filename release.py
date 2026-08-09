@@ -1,8 +1,12 @@
 """Build and publish a release.
 
-    py release.py 1.1.0            # bump, build, verify, tag, publish
-    py release.py 1.1.0 --dry-run  # do everything except push and publish
-    py release.py --check          # verify the current state, build nothing
+    python release.py                  # bump the patch, build, verify, tag, publish
+    python release.py 1.1.0            # ...or say which version
+    python release.py 1.1.0 --dry-run  # do everything except push and publish
+    python release.py --check          # verify the current state, build nothing
+
+Runnable as ``py release.py`` too -- the build step resolves the venv
+interpreter itself (see build_python), because the Windows launcher does not.
 
 The parts worth automating here are not the build -- that is one command --
 but the four things that silently break an update for everyone:
@@ -160,10 +164,39 @@ def set_version(new: str) -> None:
     ok(f"version.py -> {new}")
 
 
+def build_python() -> str:
+    """The interpreter that actually has PyInstaller.
+
+    Not simply ``sys.executable``: ``py release.py`` goes through the Windows
+    launcher, which picks the system Python rather than the project venv --
+    and the system Python has no PyInstaller, so the build would fail several
+    minutes into the run for a reason that looks nothing like the cause.
+    """
+    venv = ROOT / ".venv" / "Scripts" / "python.exe"
+    return str(venv) if venv.exists() else sys.executable
+
+
+def check_build_python() -> None:
+    interpreter = build_python()
+    probe = subprocess.run(
+        [interpreter, "-c", "import PyInstaller; print(PyInstaller.__version__)"],
+        cwd=ROOT, text=True, capture_output=True, check=False,
+    )
+    if probe.returncode != 0:
+        raise Failed(
+            f"{interpreter} 에 PyInstaller 가 없습니다.\n"
+            "가상환경을 만들고 의존성을 설치하세요:\n"
+            "  py -3.11 -m venv .venv\n"
+            "  .venv\\Scripts\\activate\n"
+            "  pip install -r requirements.txt"
+        )
+    ok(f"빌드용 파이썬: PyInstaller {probe.stdout.strip()}")
+
+
 def build() -> None:
     if DIST_EXE.exists():
         DIST_EXE.unlink()
-    run(sys.executable, "-m", "PyInstaller", "--noconfirm", "build.spec")
+    run(build_python(), "-m", "PyInstaller", "--noconfirm", "build.spec")
     if not DIST_EXE.exists():
         raise Failed(f"빌드 후 {DIST_EXE} 이(가) 없습니다.")
     size_mb = DIST_EXE.stat().st_size / 1024 / 1024
@@ -214,7 +247,8 @@ def publish(tag: str, dry_run: bool) -> None:
 # ---------------------------------------------------------------------------
 def main() -> int:
     parser = argparse.ArgumentParser(description="Build and publish a release.")
-    parser.add_argument("new_version", nargs="?", help="예: 1.1.0")
+    parser.add_argument("new_version", nargs="?",
+                        help="예: 1.1.0 (생략하면 패치 자동 증가)")
     parser.add_argument("--dry-run", action="store_true",
                         help="빌드와 검사는 하되 푸시/업로드는 하지 않음")
     parser.add_argument("--check", action="store_true",
@@ -224,6 +258,7 @@ def main() -> int:
     try:
         step("사전 검사")
         check_tools()
+        check_build_python()
         check_asset_name()
         check_page_links()
 
@@ -233,10 +268,14 @@ def main() -> int:
             print("이상 없습니다.")
             return 0
 
-        if not args.new_version:
-            parser.error("올릴 버전을 지정하세요 (예: py release.py 1.1.0)")
-
-        new = args.new_version.lstrip("vV")
+        if args.new_version:
+            new = args.new_version.lstrip("vV")
+        else:
+            # No version given: bump the patch, the same shorthand the
+            # 6PM Assistant build script uses.
+            (major, minor, patch), _pre = V.parse(V.__version__)
+            new = f"{major}.{minor}.{patch + 1}"
+            ok(f"버전 미지정 -> 패치 올림 {V.display()} -> {V.display(new)}")
         tag = f"v{new}"
         # The very first release is the one case where the version does not
         # have to go up: there is nothing published for it to be newer than,

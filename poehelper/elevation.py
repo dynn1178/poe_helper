@@ -9,10 +9,13 @@ dropped -- which looks exactly like "the hotkeys don't work".
 
 The packaged EXE requests elevation via its embedded manifest
 (``build.spec`` -> ``uac_admin=True``), so Windows itself shows the UAC
-prompt before the process even starts. The relaunch path below only
-matters when running from source (``python main.py``) without that
-manifest, mirroring the original AHK's ``if not A_IsAdmin { Run *RunAs
-... }`` guard.
+prompt before the process even starts. ``ensure_admin`` is the backstop for
+when that did not happen -- running from source (``python main.py``, which
+has no manifest), or a packaged build launched in a way that bypassed it --
+and it re-launches elevated rather than only warning, mirroring the original
+AHK's ``if not A_IsAdmin { Run *RunAs ... }`` guard. A single retry flag
+keeps a declined prompt from becoming a loop; after that it runs on and says
+plainly that the hotkeys will not reach the game.
 """
 from __future__ import annotations
 
@@ -149,31 +152,54 @@ def _alert(message: str, blocking: bool = True) -> None:
         threading.Thread(target=show, daemon=True).start()
 
 
+# Passed to the elevated copy so a refused UAC prompt cannot become a loop:
+# if this is already in argv and we are still not elevated, the request was
+# made once and declined, and asking again would just re-open the same prompt.
+_RETRY_FLAG = "--elevation-retry"
+
+# What ensure_admin() tells main.py to do.
+CONTINUE = "continue"
+EXIT = "exit"
+
+
 def relaunch_as_admin() -> bool:
-    """Start an elevated copy of this script. Returns True if Windows
+    """Start an elevated copy of this program. Returns True if Windows
     accepted the request (this process should then exit)."""
-    # argv[0] is whatever was typed -- for the usual `python main.py` that
-    # is the bare relative name "main.py". An elevated process is started
-    # by Windows' AppInfo service rather than inherited from this one, so
-    # it does not reliably get this process's working directory: the
-    # relaunched interpreter would be handed a relative path it cannot
-    # resolve and die immediately, leaving nothing running at all. Resolving
-    # the script and passing its folder as the working directory removes
-    # that dependency.
-    #
-    # sys.executable is inherited as-is, so a run started from .venv relaunches
-    # with that same interpreter and keeps its site-packages.
-    script = Path(sys.argv[0] or (Path(__file__).resolve().parent.parent / "main.py")).resolve()
-    args = [str(script), *sys.argv[1:]]
-    params = " ".join(f'"{a}"' for a in args)
+    if getattr(sys, "frozen", False):
+        # Packaged: sys.executable *is* the program, so it takes only the
+        # original arguments. Passing argv[0] as well (the source path below)
+        # would hand the exe its own filename as an argument.
+        target = sys.executable
+        rest = [*sys.argv[1:], _RETRY_FLAG]
+        workdir = str(Path(sys.executable).resolve().parent)
+    else:
+        # argv[0] is whatever was typed -- for the usual `python main.py` that
+        # is the bare relative name "main.py". An elevated process is started
+        # by Windows' AppInfo service rather than inherited from this one, so
+        # it does not reliably get this process's working directory: the
+        # relaunched interpreter would be handed a relative path it cannot
+        # resolve and die immediately, leaving nothing running at all.
+        # Resolving the script and passing its folder as the working
+        # directory removes that dependency.
+        #
+        # sys.executable is inherited as-is, so a run started from .venv
+        # relaunches with that same interpreter and keeps its site-packages.
+        script = Path(
+            sys.argv[0] or (Path(__file__).resolve().parent.parent / "main.py")
+        ).resolve()
+        target = sys.executable
+        rest = [str(script), *sys.argv[1:], _RETRY_FLAG]
+        workdir = str(script.parent)
+
+    params = " ".join(f'"{a}"' for a in rest)
 
     shell_execute = ctypes.windll.shell32.ShellExecuteW
     shell_execute.restype = ctypes.c_void_p  # HINSTANCE: a pointer, not an int, on x64
-    rc = shell_execute(None, "runas", sys.executable, params, str(script.parent), 1)
+    rc = shell_execute(None, "runas", target, params, workdir, 1)
     rc = int(rc or 0)
 
     if rc > _SHELL_EXECUTE_MIN_SUCCESS:
-        logger.info("relaunching elevated: %s %s", sys.executable, params)
+        logger.info("relaunching elevated: %s %s", target, params)
         return True
 
     if rc == _ERROR_CANCELLED:

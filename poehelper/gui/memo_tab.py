@@ -23,6 +23,12 @@ from .widgets.tooltip import Tooltip
 
 _URL_PATTERN = re.compile(r"https?://\S+")
 _CARD_COLUMNS = 3
+# Cards share the width evenly across _CARD_COLUMNS and stack downwards,
+# so a row of them reaches both edges with no dead strip on the right. Only
+# the height is fixed: letting the height follow the content made a single
+# memo one enormous box, which is what stopped the grid reading as a grid.
+_CARD_MIN_WIDTH = 150
+_CARD_HEIGHT = 92
 
 
 class MemoTab(ctk.CTkFrame):
@@ -65,7 +71,11 @@ class MemoTab(ctk.CTkFrame):
         self.card_scroll = ctk.CTkScrollableFrame(self.card_view, fg_color="transparent")
         self.card_scroll.pack(fill="both", expand=True, padx=8, pady=(0, 8))
         for col in range(_CARD_COLUMNS):
-            self.card_scroll.grid_columnconfigure(col, weight=1)
+            # Equal weight so the spare width is split between the columns
+            # rather than left over at the right-hand edge.
+            self.card_scroll.grid_columnconfigure(
+                col, weight=1, minsize=_CARD_MIN_WIDTH
+            )
 
         self._render_cards()
 
@@ -86,8 +96,13 @@ class MemoTab(ctk.CTkFrame):
         card = ctk.CTkFrame(
             self.card_scroll, corner_radius=12, fg_color=("#fafafc", "#2a2a2c"),
             border_width=1, border_color=("#e0e0e0", "#3a3a3c"),
+            width=_CARD_MIN_WIDTH, height=_CARD_HEIGHT,
         )
-        card.grid(row=row, column=col, padx=6, pady=6, sticky="nsew")
+        # "ew" not "nw": the card takes the full column width. grid_propagate
+        # off so the title/preview inside cannot stretch the fixed height back
+        # out to their own size.
+        card.grid(row=row, column=col, padx=6, pady=6, sticky="ew")
+        card.grid_propagate(False)
 
         name_label = ctk.CTkLabel(card, text=memo.get("name", ""), font=theme.FONT_BODY_STRONG, anchor="w")
         name_label.pack(fill="x", padx=10, pady=(10, 2))
@@ -97,7 +112,7 @@ class MemoTab(ctk.CTkFrame):
             preview_text = preview_text[:60] + "…"
         preview = ctk.CTkLabel(
             card, text=preview_text or "(내용 없음)", anchor="w", justify="left",
-            wraplength=150, text_color=("#7a7a7a", "#8e8e93"), font=theme.FONT_CAPTION,
+            wraplength=_CARD_MIN_WIDTH - 28, text_color=("#7a7a7a", "#8e8e93"), font=theme.FONT_CAPTION,
         )
         preview.pack(fill="x", padx=10, pady=(0, 8))
 
@@ -106,6 +121,11 @@ class MemoTab(ctk.CTkFrame):
             command=lambda: self._delete_memo(memo["id"]),
         )
         delete_btn.place(relx=1.0, x=-6, y=6, anchor="ne")
+
+        def _rewrap(event, label=preview):
+            label.configure(wraplength=max(60, event.width - 28))
+
+        card.bind("<Configure>", _rewrap)
 
         for widget in (card, name_label, preview):
             widget.bind("<Double-Button-1>", lambda _e, mid=memo["id"]: self._open_detail(mid))

@@ -11,6 +11,7 @@ import customtkinter as ctk
 from .. import theme
 from .command_picker import CommandPickerDialog
 from .hotkey_picker import HotkeyPicker
+from .reorder import DragReorder
 from .tooltip import Tooltip
 
 
@@ -33,6 +34,13 @@ class MacroTableEditor(ctk.CTkFrame):
 
         self.scroll = ctk.CTkScrollableFrame(self, height=280)
         self.scroll.pack(fill="both", expand=True)
+        self._drag = DragReorder(
+            rows=self.rows,
+            widget_of=lambda entry: entry["row"],
+            repack=self._repack,
+            on_drop=self._notify,
+            scroll_canvas=self.scroll._parent_canvas,
+        )
         for macro in macros:
             self._add_row(macro.get("hotkey", ""), macro.get("text", ""))
 
@@ -53,6 +61,11 @@ class MacroTableEditor(ctk.CTkFrame):
         row.pack(fill="x", pady=3)
 
         text_var = ctk.StringVar(value=text)
+        entry = {"row": row, "text": text_var}
+
+        # Order is meaningful -- it is the order saved, and the order shown --
+        # so rows are draggable by this grip.
+        self._drag.handle(row, entry).pack(side="left", padx=(0, 2))
 
         ctk.CTkEntry(
             row, textvariable=text_var, placeholder_text="채팅 문구"
@@ -60,8 +73,8 @@ class MacroTableEditor(ctk.CTkFrame):
         picker = HotkeyPicker(row, on_change=lambda _c: self._notify(), show_capture=False)
         picker.set_combo(hotkey)
         picker.pack(side="left", padx=(0, 4))
+        entry["picker"] = picker
 
-        entry = {"row": row, "picker": picker, "text": text_var}
         ctk.CTkButton(
             row,
             text="X",
@@ -88,6 +101,34 @@ class MacroTableEditor(ctk.CTkFrame):
     def _remove_row(self, entry: dict) -> None:
         entry["row"].destroy()
         self.rows.remove(entry)
+        self._notify()
+
+    def _repack(self) -> None:
+        """Re-lay the rows in ``self.rows`` order.
+
+        pack() appends, so moving a row means forgetting them all and adding
+        them back in the new order -- there is no "insert at index" for a
+        packed widget.
+        """
+        for entry in self.rows:
+            entry["row"].pack_forget()
+        for entry in self.rows:
+            entry["row"].pack(fill="x", pady=3)
+
+    def sort_unbound_last(self) -> None:
+        """Rows with a hotkey first, unbound ones after, order kept within each.
+
+        Called from the 저장 button. A phrase with no key assigned cannot fire,
+        so it is only ever in the way of the ones that can -- but it is still
+        worth keeping, which is why they sink instead of being dropped.
+        """
+        bound = [e for e in self.rows if e["picker"].get_combo()]
+        unbound = [e for e in self.rows if not e["picker"].get_combo()]
+        if self.rows == bound + unbound:
+            return
+        # In place: DragReorder holds a reference to this exact list.
+        self.rows[:] = bound + unbound
+        self._repack()
         self._notify()
 
     def get_macros(self) -> list[dict]:

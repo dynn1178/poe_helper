@@ -35,10 +35,10 @@ pip install -r requirements.txt
 
 ```bash
 .venv\Scripts\activate
-py release.py 1.1.0
+python release.py 1.1.0
 ```
 
-`release.py`가 순서대로 처리합니다.
+`release.py`가 순서대로 처리합니다. (`py` 가 아니라 `python` 입니다 — `py` 는 Windows 런처라 가상환경이 아닌 시스템 파이썬을 고릅니다. 스크립트가 빌드에는 `.venv` 파이썬을 직접 찾아 쓰지만, 명령 자체도 가상환경에서 실행하는 편이 확실합니다.)
 
 1. **사전 검사** — `git`/`gh` 존재, `build.spec`의 산출물 이름과
    `version.ASSET_NAME` 일치, 다운로드 페이지 링크가 현재 저장소를 가리키는지,
@@ -53,8 +53,8 @@ py release.py 1.1.0
 먼저 확인만 하고 싶으면:
 
 ```bash
-py release.py --check          # 검사만
-py release.py 1.1.0 --dry-run  # 빌드까지 하고 푸시/업로드는 안 함
+python release.py --check          # 검사만
+python release.py 1.1.0 --dry-run  # 빌드까지 하고 푸시/업로드는 안 함
 ```
 
 ---
@@ -123,7 +123,7 @@ git add web/ && git commit -m "docs: 소개 페이지 수정" && git push
 
 | 증상 | 원인과 조치 |
 |---|---|
-| 업데이트 알림이 안 뜬다 | 태그가 `__version__`보다 높은지 확인. `py -c "from poehelper import version as v; print(v.is_newer('1.1.0'))"` |
+| 업데이트 알림이 안 뜬다 | 태그가 `__version__`보다 높은지 확인. `python -c "from poehelper import version as v; print(v.is_newer('1.1.0'))"` |
 | "릴리즈에 파일이 첨부되어 있지 않습니다" | 자산 이름이 `KuanPoeHelper.exe`가 아님. 릴리즈에서 이름을 고쳐 다시 업로드 |
 | 다운로드 버튼이 404 | 릴리즈가 draft 상태이거나 자산 이름 불일치. `gh release list`로 확인 |
 | 업데이트 후 프로그램이 안 켜짐 | 교체 스크립트가 실패한 경우 받은 파일을 대신 실행합니다. `%TEMP%\KuanPoeHelper-<버전>.exe` 확인 |
