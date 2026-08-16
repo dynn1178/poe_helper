@@ -1947,8 +1947,37 @@ class App(ctk.CTk):
         if self.on_request_minimize:
             self.on_request_minimize()
 
+    def close_child_windows(self) -> None:
+        """Shut every window this one opened, in an orderly way.
+
+        destroy() on the root would take them down regardless, but each of
+        these has something to do first -- saving its geometry, unsubscribing
+        from the whisper feed or the zone tracker -- and a listener bound to a
+        destroyed widget keeps firing for the rest of the session.
+        """
+        panel = self._whisper_panel
+        if panel is not None and panel.winfo_exists():
+            panel.close()
+        self._whisper_panel = None
+
+        price = self._price_window
+        if price is not None and price.winfo_exists():
+            price.close()
+        self._price_window = None
+
+        for group in (self._route_windows, self._layout_windows, self._detect_windows):
+            for window in list(group.values()):
+                try:
+                    if window.winfo_exists():
+                        closer = getattr(window, "close", window.destroy)
+                        closer()
+                except tk.TclError:
+                    pass
+            group.clear()
+
     def _on_exit(self) -> None:
         self.config.save()
+        self.close_child_windows()
         if self.on_request_exit:
             self.on_request_exit()
 

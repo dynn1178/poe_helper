@@ -180,7 +180,11 @@ DEFAULTS: dict[str, Any] = {
         # than a buyout-only search: most currency is listed for direct trade
         # and a buyout filter hides all of it.
         "status": "available",
-        "indexed": "",            # listing age; blank = 언제든
+        # Cheapest first, and only listings put up in the last week: an old
+        # listing is usually a seller who has stopped answering, and its
+        # price drags the whole comparison down.
+        "sort": "price",
+        "indexed": "1week",
         "auto_search": True,      # search as soon as the window opens
         "result_count": 10,
         # Point size for the price window. A setting rather than a constant

@@ -103,6 +103,7 @@ class _ModRow:
     def __init__(self, mod: ItemMod, checked: bool, current: float | None):
         self.mod = mod
         self.current = current
+        self.initial_checked = checked
         self.enabled = ctk.BooleanVar(value=checked)
         self.minimum = ctk.StringVar(value=_fmt(current))
         self.maximum = ctk.StringVar(value="")
@@ -133,6 +134,13 @@ class _ModRow:
             var.set(_fmt(_round(max(0.0, value + delta))))
             moved = True
         return moved
+
+    def reset(self) -> None:
+        """Back to how the window opened -- ticked as it was, bounds at the
+        roll on the item, no upper limit."""
+        self.enabled.set(self.initial_checked)
+        self.minimum.set(_fmt(self.current))
+        self.maximum.set("")
 
     def selection(self) -> querymod.Selection | None:
         if not self.enabled.get():
@@ -281,6 +289,10 @@ class PriceCheckWindow(ctk.CTkToplevel):
             caption, text="검색에 사용할 속성", font=self.font, anchor="w",
             text_color=theme.OVERLAY_TEXT_DIM,
         ).pack(side="left")
+        ctk.CTkLabel(
+            caption, text="점수", font=self.font_small, width=38, anchor="e",
+            text_color=theme.OVERLAY_TEXT_DIM,
+        ).pack(side="right", padx=(4, 2))
         for heading in ("최대", "최소"):
             ctk.CTkLabel(
                 caption, text=heading, font=self.font_small, width=62,
@@ -295,15 +307,25 @@ class PriceCheckWindow(ctk.CTkToplevel):
         # so it beats percentage-through-range for deciding which mods are
         # the ones worth pricing on.
         ranked = sorted(self.item.searchable_mods, key=_tier_rank)
-        default_on: set[int] = set()
-        if not self.item.priced_by_name:
-            # Three in total, by tier. The prefix/suffix split above is about
-            # where mods are *shown*; ticking three of each as well ANDs six
-            # filters together, and a six-mod search on a specific base
-            # reliably returns nothing at all.
+        # Ticked by roll quality, not by tier: what a mod is worth depends on
+        # where it landed in its own range, and "T1 at the bottom of its band"
+        # is a worse line than "T2 near the top of its own".
+        #
+        # 고정(implicit) and 제작(crafted) are excluded whatever their score.
+        # An implicit is on every copy of the base and a crafted mod can be
+        # added to any item, so neither narrows a search to comparable items --
+        # they only make it return less.
+        scored = [
+            m for m in ranked
+            if m.kind in ("explicit", "fractured") and m.quality is not None
+        ]
+        best = sorted(scored, key=lambda m: -m.quality)[:3]
+        default_on = {id(m) for m in best}
+        if not default_on and not self.item.priced_by_name:
+            # No roll ranges at all (advanced mod descriptions off). Fall back
+            # to tier so the window still opens with a real search.
             rollable = [m for m in ranked if m.kind in ("explicit", "fractured")]
-            best = sorted(rollable, key=_tier_only)[:3]
-            default_on = {id(m) for m in best}
+            default_on = {id(m) for m in sorted(rollable, key=_tier_only)[:3]}
         for mod in ranked:
             self._build_mod_row(box, mod, id(mod) in default_on)
 
@@ -319,6 +341,16 @@ class PriceCheckWindow(ctk.CTkToplevel):
         # Right-hand boxes first, expanding label last: pack hands out space
         # in *packing* order regardless of side, so a long mod name packed
         # first shoves the boxes out of line with every other row.
+        # How well this line rolled, right next to the numbers it is about:
+        # 38 in a 30-40 range is 80% of the way up its band, and that -- not
+        # the raw 38 -- is what says whether the line is worth pricing on.
+        quality = mod.quality
+        ctk.CTkLabel(
+            row, text=f"{quality * 100:.0f}%" if quality is not None else "",
+            font=self.font_small, width=38, anchor="e",
+            text_color=_quality_colour(quality) if quality is not None else theme.OVERLAY_TEXT_DIM,
+        ).pack(side="right", padx=(4, 2))
+
         # A mod with no number in it ("번개 피해만 줄 수 있음") has nothing to
         # bound, and an editable box there invites a value the site will
         # reject. Disabled rather than absent so the columns stay aligned.
@@ -395,8 +427,19 @@ class PriceCheckWindow(ctk.CTkToplevel):
             wrap, 3, 0, "거래", STATUS_OPTIONS, trade.get("status", "available"), 176
         )
         self.indexed_var = self._option(
-            wrap, 3, 2, "등록", INDEXED_OPTIONS, trade.get("indexed", ""), 110
+            wrap, 3, 2, "등록", INDEXED_OPTIONS, trade.get("indexed", "1week"), 110
         )
+        # Taken after every widget exists, so 초기화 restores exactly what the
+        # window opened with rather than a second copy of the defaults.
+        # A list of pairs, not a dict: tkinter Variables define __eq__ and
+        # are therefore unhashable, so they cannot be dict keys.
+        self._initial_state = [
+            (var, var.get())
+            for var in (
+                *self.num_vars.values(), *self.filter_vars.values(),
+                self.status_var, self.indexed_var,
+            )
+        ]
 
     def _cell(self, parent, row: int, index: int, label: str) -> None:
         ctk.CTkLabel(
@@ -442,8 +485,11 @@ class PriceCheckWindow(ctk.CTkToplevel):
             ctk.CTkButton(
                 bar, text="범위 좁히기", width=96, command=lambda: self._nudge(1), **button
             ).pack(side="left", padx=(6, 0))
+        ctk.CTkButton(
+            bar, text="초기화", width=68, command=self.reset_filters, **button
+        ).pack(side="left", padx=(6, 0))
         self.browser_button = ctk.CTkButton(
-            bar, text="거래소에서 열기", width=126, command=self._open_browser,
+            bar, text="거래소에서 열기", width=116, command=self._open_browser,
             state="disabled", **button,
         )
         self.browser_button.pack(side="left", padx=(6, 0))
@@ -459,7 +505,7 @@ class PriceCheckWindow(ctk.CTkToplevel):
         self.status.pack(side="left", fill="x", expand=True, padx=(2, 8))
     def _sort_menu(self, parent) -> ctk.StringVar:
         """Ordering sits with the list it orders, not down in the filters."""
-        stored = self.app_config.data.get("trade", {}).get("sort", "indexed")
+        stored = self.app_config.data.get("trade", {}).get("sort", "price")
         labels = [text for _value, text in SORT_OPTIONS]
         var = ctk.StringVar(
             value=next((t for v, t in SORT_OPTIONS if v == stored), labels[0])
@@ -480,12 +526,26 @@ class PriceCheckWindow(ctk.CTkToplevel):
         self.results.pack(fill="both", expand=True, padx=12, pady=(0, 14))
 
     def _sort(self) -> str:
-        return _chosen(self.sort_var) or "indexed"
+        var = getattr(self, "sort_var", None)
+        return (_chosen(var) if var is not None else "") or "price"
 
     # ---- searching --------------------------------------------------------
     def selections(self) -> list[querymod.Selection]:
         picked = [row.selection() for row in self._rows]
         return [s for s in picked if s is not None]
+
+    def reset_filters(self) -> None:
+        """Undo every adjustment and search again.
+
+        Widening a search is a few clicks; getting back to a known state after
+        it went wrong was a matter of remembering what each box started at.
+        """
+        for row in self._rows:
+            row.reset()
+        for var, value in getattr(self, "_initial_state", []):
+            var.set(value)
+        self._set_status("검색 조건을 처음 상태로 되돌렸습니다.")
+        self.search()
 
     def _nudge(self, direction: int) -> None:
         """Widen or tighten every ticked mod by 5% of its best possible roll."""
@@ -740,7 +800,9 @@ class PriceCheckWindow(ctk.CTkToplevel):
         self._closed = True
         trade = self.app_config.data.setdefault("trade", {})
         trade["status"] = self._status_option
-        trade["indexed"] = _chosen(self.indexed_var)
+        indexed = getattr(self, "indexed_var", None)
+        if indexed is not None:
+            trade["indexed"] = _chosen(indexed)
         trade["sort"] = self._sort()
         self.app_config.save()
         self.destroy()
@@ -777,6 +839,14 @@ def _tier_rank(mod: ItemMod) -> tuple[int, int, float]:
     """
     tier = mod.tier if mod.tier is not None else 99
     return _group_of(mod), tier, -(mod.quality if mod.quality is not None else 0.0)
+
+
+def _quality_colour(quality: float) -> str:
+    if quality >= 0.85:
+        return "#7fd6a4"
+    if quality >= 0.5:
+        return "#e8c07a"
+    return theme.OVERLAY_TEXT_DIM
 
 
 def _tier_colour(tier: int | None) -> str:

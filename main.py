@@ -134,6 +134,7 @@ def main() -> None:
     hotkey_manager.apply()
 
     def do_exit() -> None:
+        app.close_child_windows()
         zone_tracker.stop()
         whisper_monitor.stop()
         flask_timer.stop()
