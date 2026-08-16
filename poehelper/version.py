@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import re
 
-__version__ = "1.2.0"
+__version__ = "1.2.1"
 
 GITHUB_OWNER = "dynn1178"
 GITHUB_REPO = "poe_helper"
