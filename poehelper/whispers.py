@@ -56,7 +56,32 @@ _TRADE_RES = (
         r"(?P<price>.+?)(?:에|으로) (?:구매|구입|사)"
         r"(?:.*?보관함 탭 \"(?P<tab>[^\"]*)\".*?왼쪽 (?P<left>\d+).*?(?:상단|위) (?P<top>\d+))?"
     ),
+    # Bulk exchange -- currency, fragments, scarabs. A different sentence
+    # entirely: no stash position, a quantity in front of the item, and the
+    # price expressed as what the buyer is offering ("for my 1.1 Divine Orb")
+    # rather than what the item was listed at. These were falling through as
+    # ordinary chat, which cost them the price badge and the trade buttons.
+    re.compile(
+        r"like to buy your (?P<qty>[\d.,]+) (?P<item>.+?) for my (?P<price>[\d.,]+ .+?)"
+        r"(?: in (?P<league>[^(]+?))?\s*$"
+    ),
 )
+
+# Server-generated, not a person: the client logs the "away" notice as an
+# incoming whisper, and in whatever language the other player's client uses.
+# Carding those means a notification for every whisper *you* send to someone
+# offline, which is the opposite of useful.
+_AUTO_REPLIES = (
+    "This player is AFK",
+    "이 플레이어는 자리비움",
+    "Игрок отошёл",
+    "is away from",
+    "자리를 비웠습니다",
+)
+
+
+def is_auto_reply(text: str) -> bool:
+    return any(marker in text for marker in _AUTO_REPLIES)
 
 # A whisper older than this is not worth keeping on screen: the buyer has
 # moved on, and a panel that accumulates all evening becomes something to
@@ -80,10 +105,16 @@ class Whisper:
     stash_tab: str = ""
     stash_left: int = 0
     stash_top: int = 0
+    quantity: str = ""
 
     @property
     def is_trade(self) -> bool:
         return bool(self.item)
+
+    @property
+    def wanted(self) -> str:
+        """The item as it should be read: "12 각성의 뿔 달린 갑충석"."""
+        return f"{self.quantity} {self.item}".strip() if self.quantity else self.item
 
     @property
     def rarity(self) -> str:
@@ -159,6 +190,7 @@ def _add_trade_details(whisper: Whisper) -> None:
             continue
         parts = found.groupdict()
         whisper.item = (parts.get("item") or "").strip()
+        whisper.quantity = (parts.get("qty") or "").strip()
         whisper.price = (parts.get("price") or "").strip()
         whisper.league = (parts.get("league") or "").strip()
         whisper.stash_tab = (parts.get("tab") or "").strip()
@@ -234,6 +266,8 @@ class WhisperMonitor:
             return
         whisper = parse(line)
         if whisper is None or not whisper.sender:
+            return
+        if is_auto_reply(whisper.text):
             return
         self.seen_count += 1
         for callback in list(self._listeners):

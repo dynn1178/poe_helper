@@ -248,7 +248,7 @@ class WhisperPanel(tk.Toplevel):
         ).pack(padx=7, pady=1)
 
         ctk.CTkLabel(
-            row, text=_shorten(whisper.item, self._name_budget()),
+            row, text=_shorten(whisper.wanted, self._name_budget()),
             font=(theme.FONT_FAMILY, 12, "bold"),
             text_color=_RARITY_COLOR.get(whisper.rarity, _RARITY_COLOR[""]),
             anchor="w",
@@ -524,6 +524,16 @@ class WhisperPanel(tk.Toplevel):
 def _shorten(text: str, budget: int) -> str:
     text = text.strip()
     return text if len(text) <= budget else text[: budget - 1].rstrip() + "…"
+
+
+def _sample_plain() -> Whisper:
+    from datetime import datetime
+
+    return Whisper(
+        sender="테스트친구",
+        text="형 지금 접속했어요? 같이 맵 돌아요",
+        at=datetime.now(),
+    )
 
 
 def _sample() -> Whisper:

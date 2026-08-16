@@ -1727,10 +1727,13 @@ class App(ctk.CTk):
         Whispers are not something you can arrange on demand, so without this
         there is no way to see where the panel sits or whether it works.
         """
-        from .whisper_panel import _sample
+        from .whisper_panel import _sample, _sample_plain
 
         panel = self.whisper_panel()
         if panel is not None:
+            # One of each: a buy whisper and an ordinary one, since they draw
+            # quite differently and both are worth seeing before trusting it.
+            panel.add(_sample_plain())
             panel.add(_sample())
 
     # ---- 아이템 가격 확인 ---------------------------------------------------

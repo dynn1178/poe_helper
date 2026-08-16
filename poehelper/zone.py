@@ -290,12 +290,43 @@ class ZoneTracker:
         except OSError as exc:
             self.error = str(exc)
             return None
+        # Establish where the character is *now* before following along.
+        # Without this the zone stays unknown until the next loading screen,
+        # so starting the app while already parked in a hideout left the
+        # cooldown bars running and the macros ungated -- the exact case the
+        # gating exists for.
+        self._prime_from(path)
         handle.seek(0, 2)  # only new lines matter; the file is tens of MB
         self.log_path = path
         self.error = ""
         self._buffer = b""
         logger.info("tailing client log: %s", path)
         return handle
+
+    _PRIME_BYTES = 512 * 1024
+
+    def _prime_from(self, path: Path) -> None:
+        """Read the most recent zone out of the tail of the log.
+
+        Scans backwards so the *last* Set Source wins, and reads a bounded
+        window rather than the whole file -- it runs to tens of megabytes,
+        and half a megabyte covers far more loading screens than are needed.
+        """
+        try:
+            with open(path, "rb") as handle:
+                size = handle.seek(0, 2)
+                handle.seek(max(0, size - self._PRIME_BYTES))
+                chunk = handle.read()
+        except OSError:
+            logger.debug("could not prime the zone", exc_info=True)
+            return
+        for raw in reversed(chunk.splitlines()):
+            match = _SCENE_RE.search(raw.decode("utf-8", errors="replace").rstrip())
+            if match:
+                name = match.group(1).strip()
+                if name not in _PLACEHOLDERS:
+                    self._set_zone(name)
+                    return
 
     def _read_new(self, handle):
         position = handle.tell()
