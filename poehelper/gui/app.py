@@ -129,6 +129,14 @@ _GAME_HOTKEY_DESCRIPTIONS: list[tuple[str, str, str]] = [
         "영역이 설정되지 않았으면 설정 화면이 열립니다.",
     ),
     (
+        "price_check",
+        "아이템 가격 확인 (거래소 검색)",
+        "마우스를 올려둔 아이템을 게임에서 복사(Ctrl+C)해 거래소에서 같은 조건의 매물을 찾아 "
+        "가격을 보여줍니다. 고유 아이템은 이름으로, 레어 아이템은 베이스와 잘 뜬 속성 2개로 "
+        "검색하며, 창에서 속성 체크를 바꾸면 즉시 다시 찾습니다. "
+        "게임 UI 설정에서 '고급 속성 설명'을 켜두면 각 속성이 얼마나 잘 떴는지(%)까지 표시됩니다.",
+    ),
+    (
         "show_image_1",
         "참고 이미지 1 표시 (홀드)",
         "키를 누르고 있는 동안 화면 중앙에 참고 이미지 1(ctrl1.png)을 표시합니다.",
@@ -227,6 +235,9 @@ class App(ctk.CTk):
         self._route_windows: dict[str, RouteWindow] = {}
         self._layout_windows: dict[str, LayoutWindow] = {}
         self._detect_windows: dict[str, DetectTestWindow] = {}
+        self._price_window = None
+        self._whisper_panel = None
+        self._trade_api = None
 
         toast.bind_root(self)
 
@@ -252,15 +263,20 @@ class App(ctk.CTk):
         # 3 checkboxes + a combo box each -- all of it spent before the
         # window could be shown at all. Now the window is up in ~2.5s and
         # the remaining tabs are ready long before they can be clicked.
+        # Tab order is the order they are used in, left to right, ending with
+        # the two that are set up once and then left alone: 좌표 설정 (done at
+        # install time and after a resolution change) and 설정 (the app's own
+        # options). Those two sit on the right for the same reason a
+        # preferences menu does.
         self._tab_builders: dict[str, Callable[[ctk.CTkFrame], None]] = {
             "채팅 매크로": self._build_macro_tab,
             "물약": self._build_flask_tab,
             "게임 단축키": self._build_hotkeys_tab,
             "링크": self._build_links_tab,
-            "좌표 캘리브레이션": self._build_calibration_tab,
             "메모": self._build_memo_tab,
             "레벨업": self._build_levelup_tab,
-            "기타": self._build_misc_tab,
+            "좌표 설정": self._build_calibration_tab,
+            "설정": self._build_misc_tab,
         }
         for name in self._tab_builders:
             self.tabs.add(name)
@@ -685,7 +701,7 @@ class App(ctk.CTk):
                     command=lambda fn=calib_fn: self._jump_to_calibration(fn),
                 )
                 calib_btn.pack(side="right", padx=(0, 6))
-                Tooltip(calib_btn, "이 기능에 필요한 화면 좌표를 지금 바로 설정합니다 (좌표 캘리브레이션 탭으로 이동).")
+                Tooltip(calib_btn, "이 기능에 필요한 화면 좌표를 지금 바로 설정합니다 (좌표 설정 탭으로 이동).")
 
             if action_id == "toggle_continuous_key":
                 # Which key the toggle actually spams, right under the
@@ -897,7 +913,7 @@ class App(ctk.CTk):
         self.refresh_conflict_banner()
 
     def _jump_to_calibration(self, calibrate_fn: Callable) -> None:
-        self._show_tab("좌표 캘리브레이션")
+        self._show_tab("좌표 설정")
         calibrate_fn(self, self.config)
 
     def _save_hotkey(self, action_id: str, combo: str) -> None:
@@ -959,7 +975,7 @@ class App(ctk.CTk):
             self.link_editor._loading = False
         self.link_editor._notify()
 
-    # ---- tab: 좌표 캘리브레이션 --------------------------------------------
+    # ---- tab: 좌표 설정 -----------------------------------------------------
     def _build_calibration_tab(self, tab: ctk.CTkFrame) -> None:
         self._build_save_row(tab)
         scroll = ctk.CTkScrollableFrame(tab)
@@ -1128,7 +1144,7 @@ class App(ctk.CTk):
             text_color=theme.PRIMARY, wraplength=620,
         ).pack(fill="x", pady=(6, 0))
 
-    # ---- tab: 기타 ---------------------------------------------------------
+    # ---- tab: 설정 ---------------------------------------------------------
     def _build_misc_tab(self, tab: ctk.CTkFrame) -> None:
         self._build_save_row(tab)
         scroll = ctk.CTkScrollableFrame(tab)
@@ -1174,9 +1190,173 @@ class App(ctk.CTk):
         )
         ctk.CTkButton(backup_row, text="가져오기", command=self._import_config).pack(side="left")
 
+        self._build_whisper_section(scroll)
+        self._build_trade_section(scroll)
         self._build_update_section(scroll)
 
-    # ---- 기타 탭: 자동 업데이트 -------------------------------------------
+    # ---- 설정 탭: 귓속말 알림 ------------------------------------------------
+    _WHISPER_HELP = (
+        "귓속말이 오면 화면에 알림 카드를 띄웁니다. 게임 클라이언트가 남기는 로그에서 "
+        "읽어오므로 게임 메모리나 화면을 건드리지 않습니다.\n\n"
+        "• 구매 귓속말이면 아이템 이름·제시 금액·창고 위치를 뽑아 강조해서 보여줍니다.\n"
+        "• 카드의 초대/귓속말/은신처 버튼은 게임 채팅창에 명령을 대신 입력합니다.\n"
+        "• 차단 버튼은 오른쪽 끝에 따로 떨어뜨려 두었습니다. 되돌릴 수 없는 동작이라 "
+        "자주 누르는 버튼 옆에 두지 않았습니다.\n"
+        "• 카드는 설정한 시간 뒤 숨겨지고 얇은 막대만 남습니다. 막대에 마우스를 올리면 "
+        "다시 나타납니다. 최대 3개가 보이고 그 이상은 스크롤됩니다.\n"
+        "• 내가 보낸 귓속말은 게임이 로그에 남기지 않아 표시할 수 없습니다."
+    )
+    def _build_whisper_section(self, parent: ctk.CTkFrame) -> None:
+        title_row, _label = labelled_row(
+            parent, "귓속말 알림", self._WHISPER_HELP, font=theme.FONT_SECTION
+        )
+        title_row.pack(fill="x", pady=(18, 2))
+
+        cfg = self.config.data.setdefault("whisper", {})
+        self.whisper_enabled_var = ctk.BooleanVar(value=cfg.get("enabled", True))
+        ctk.CTkCheckBox(
+            parent, text="귓속말 알림 사용", variable=self.whisper_enabled_var,
+            command=self._save_whisper,
+        ).pack(anchor="w", pady=(2, 0))
+
+        self.whisper_start_var = ctk.BooleanVar(value=cfg.get("open_on_start", True))
+        ctk.CTkCheckBox(
+            parent, text="프로그램 시작할 때 알림창 열기", variable=self.whisper_start_var,
+            command=self._save_whisper,
+        ).pack(anchor="w", pady=(4, 0))
+
+        row = ctk.CTkFrame(parent, fg_color="transparent")
+        row.pack(fill="x", pady=(6, 0))
+        ctk.CTkLabel(row, text="숨김까지:", font=theme.FONT_CAPTION).pack(side="left")
+        self.whisper_hide_var = ctk.StringVar(value=str(cfg.get("hide_after_sec", 5)))
+        ctk.CTkEntry(row, textvariable=self.whisper_hide_var, width=46).pack(side="left", padx=(4, 2))
+        ctk.CTkLabel(row, text="초", font=theme.FONT_CAPTION).pack(side="left")
+        ctk.CTkLabel(row, text="보관:", font=theme.FONT_CAPTION).pack(side="left", padx=(16, 4))
+        self.whisper_keep_var = ctk.StringVar(value=str(cfg.get("keep_minutes", 30)))
+        ctk.CTkEntry(row, textvariable=self.whisper_keep_var, width=46).pack(side="left", padx=(0, 2))
+        ctk.CTkLabel(row, text="분", font=theme.FONT_CAPTION).pack(side="left")
+        for var in (self.whisper_hide_var, self.whisper_keep_var):
+            var.trace_add("write", lambda *_: self._save_whisper())
+
+        self.whisper_reply_vars: dict[str, ctk.StringVar] = {}
+        for key, label in (("thanks", "감사"), ("wait", "잠시만"), ("sold", "품절")):
+            row = ctk.CTkFrame(parent, fg_color="transparent")
+            row.pack(fill="x", pady=(4, 0))
+            ctk.CTkLabel(row, text=f"{label}:", font=theme.FONT_CAPTION, width=44, anchor="e").pack(
+                side="left"
+            )
+            var = ctk.StringVar(
+                value=self.config.data.get("whisper", {}).get("replies", {}).get(key, "")
+            )
+            ctk.CTkEntry(row, textvariable=var, width=430).pack(side="left", padx=6)
+            var.trace_add("write", lambda *_: self._save_whisper())
+            self.whisper_reply_vars[key] = var
+
+        buttons = ctk.CTkFrame(parent, fg_color="transparent")
+        buttons.pack(fill="x", pady=(8, 0))
+        ctk.CTkButton(
+            buttons, text="알림창 열기 / 닫기", width=140, command=self.toggle_whisper_panel
+        ).pack(side="left", padx=(0, 8))
+        ctk.CTkButton(
+            buttons, text="테스트 알림", width=100, command=self.test_whisper
+        ).pack(side="left")
+
+    def _save_whisper(self) -> None:
+        cfg = self.config.data.setdefault("whisper", {})
+        cfg["enabled"] = self.whisper_enabled_var.get()
+        cfg["open_on_start"] = self.whisper_start_var.get()
+        cfg["replies"] = {k: v.get() for k, v in self.whisper_reply_vars.items()}
+        for key, var, low, high in (
+            ("hide_after_sec", self.whisper_hide_var, 1, 120),
+            ("keep_minutes", self.whisper_keep_var, 1, 720),
+        ):
+            try:
+                cfg[key] = max(low, min(high, int(float(var.get()))))
+            except ValueError:
+                pass  # mid-edit; keep the last good value
+        self.config.save()
+        if not cfg["enabled"]:
+            panel = self.whisper_panel(create=False)
+            if panel is not None:
+                panel.close()
+                self._whisper_panel = None
+
+    # ---- 설정 탭: 아이템 가격 확인 ------------------------------------------
+    _TRADE_HELP = (
+        "아이템에 마우스를 올리고 단축키(기본 Alt+D)를 누르면 거래소에서 같은 조건의 "
+        "매물을 찾아 가격을 보여줍니다.\n\n"
+        "• 게임이 Ctrl+C로 아이템 정보를 클립보드에 넣어주는 기능을 그대로 이용합니다. "
+        "게임 메모리를 읽거나 화면을 인식하지 않습니다.\n"
+        "• 고유 아이템은 이름으로, 레어 아이템은 베이스와 잘 뜬 속성 2개로 검색합니다. "
+        "창에서 속성 체크를 바꾸면 바로 다시 찾습니다.\n"
+        "• 게임 UI 설정에서 '고급 속성 설명'을 켜두시면 각 속성이 가능 범위 안에서 "
+        "얼마나 잘 떴는지 %로 표시되고, 여러 줄짜리 속성도 정확히 인식됩니다.\n"
+        "• 거래소는 요청 횟수 제한이 있어 잠깐 기다렸다 보내는 경우가 있습니다. "
+        "제한을 어기면 일시적으로 차단되기 때문입니다."
+    )
+
+    def _build_trade_section(self, parent: ctk.CTkFrame) -> None:
+        title_row, _label = labelled_row(
+            parent, "아이템 가격 확인", self._TRADE_HELP, font=theme.FONT_SECTION
+        )
+        title_row.pack(fill="x", pady=(18, 2))
+
+        cfg = self.config.data.setdefault("trade", {})
+
+        row = ctk.CTkFrame(parent, fg_color="transparent")
+        row.pack(fill="x", pady=(2, 0))
+        ctk.CTkLabel(row, text="리그:", font=theme.FONT_CAPTION).pack(side="left")
+        self.trade_league_var = ctk.StringVar(value=cfg.get("league", ""))
+        ctk.CTkEntry(
+            row, textvariable=self.trade_league_var, width=170,
+            placeholder_text="비워두면 자동 (현재 리그)",
+        ).pack(side="left", padx=6)
+        self.trade_league_var.trace_add("write", lambda *_: self._save_trade())
+
+        ctk.CTkLabel(row, text="거래소:", font=theme.FONT_CAPTION).pack(side="left", padx=(14, 4))
+        self.trade_realm_var = ctk.StringVar(
+            value="한국 (카카오)" if cfg.get("realm", "kakao") == "kakao" else "글로벌"
+        )
+        ctk.CTkOptionMenu(
+            row, variable=self.trade_realm_var, values=["한국 (카카오)", "글로벌"],
+            width=130, command=lambda _v: self._save_trade(),
+        ).pack(side="left")
+
+        ctk.CTkLabel(row, text="글씨 크기:", font=theme.FONT_CAPTION).pack(side="left", padx=(14, 4))
+        self.trade_font_var = ctk.StringVar(value=str(cfg.get("font_size", 13)))
+        ctk.CTkEntry(row, textvariable=self.trade_font_var, width=46).pack(side="left")
+        self.trade_font_var.trace_add("write", lambda *_: self._save_trade())
+
+        opts = ctk.CTkFrame(parent, fg_color="transparent")
+        opts.pack(fill="x", pady=(6, 0))
+        self.trade_auto_var = ctk.BooleanVar(value=cfg.get("auto_search", True))
+        ctk.CTkCheckBox(
+            opts, text="창을 열면 바로 검색", variable=self.trade_auto_var,
+            command=self._save_trade,
+        ).pack(side="left")
+
+        ctk.CTkLabel(
+            parent,
+            text="리그를 비워두면 프로그램이 거래소에서 현재 리그를 알아내 채웁니다.",
+            anchor="w", font=theme.FONT_CAPTION, text_color=theme.PRIMARY, wraplength=620,
+        ).pack(fill="x", pady=(4, 0))
+
+    def _save_trade(self) -> None:
+        cfg = self.config.data.setdefault("trade", {})
+        cfg["league"] = self.trade_league_var.get().strip()
+        cfg["realm"] = "kakao" if self.trade_realm_var.get().startswith("한국") else "official"
+        cfg["auto_search"] = self.trade_auto_var.get()
+        try:
+            cfg["font_size"] = max(9, min(20, int(self.trade_font_var.get())))
+        except ValueError:
+            pass  # mid-edit; keep the last good value
+        self.config.save()
+        # The client caches per realm and holds a loaded stat table; switching
+        # realms has to build a new one rather than search Korean mods against
+        # the English site.
+        self._trade_api = None
+
+    # ---- 설정 탭: 자동 업데이트 -------------------------------------------
     _UPDATE_HELP = (
         "GitHub에 올라온 최신 릴리즈와 현재 버전을 비교합니다.\n\n"
         "• 새 버전이 있으면 변경 내용을 보여주고, '지금 업데이트'를 누르면 내려받아 "
@@ -1507,6 +1687,111 @@ class App(ctk.CTk):
             toast.show(f"로그를 찾았습니다:\n{found}")
         else:
             toast.show("로그를 찾지 못했습니다.\n게임을 실행한 뒤 다시 시도하거나 직접 지정해주세요.")
+
+    # ---- 귓속말 알림 패널 ----------------------------------------------------
+    def whisper_panel(self, create: bool = True):
+        existing = self._whisper_panel
+        if existing is not None and existing.winfo_exists():
+            return existing
+        if not create:
+            return None
+        from .whisper_panel import WhisperPanel
+
+        self._whisper_panel = WhisperPanel(
+            self, self.config, on_open_settings=lambda: self._show_tab("설정")
+        )
+        return self._whisper_panel
+
+    def toggle_whisper_panel(self) -> None:
+        existing = self._whisper_panel
+        if existing is not None and existing.winfo_exists():
+            existing.close()
+            self._whisper_panel = None
+            return
+        self.whisper_panel()
+
+    def open_whisper_panel_on_start(self) -> None:
+        cfg = self.config.data.get("whisper", {})
+        if cfg.get("enabled", True) and cfg.get("open_on_start", True):
+            self.whisper_panel()
+
+    def place_whisper_panel(self) -> None:
+        """Open the panel pinned open so it can be dragged into place."""
+        panel = self.whisper_panel()
+        if panel is not None:
+            panel.begin_placing()
+
+    def test_whisper(self) -> None:
+        """Push a sample whisper through the panel.
+
+        Whispers are not something you can arrange on demand, so without this
+        there is no way to see where the panel sits or whether it works.
+        """
+        from .whisper_panel import _sample
+
+        panel = self.whisper_panel()
+        if panel is not None:
+            panel.add(_sample())
+
+    # ---- 아이템 가격 확인 ---------------------------------------------------
+    def trade_api(self):
+        """One API client for the app, built on first use.
+
+        Not in __init__: constructing it is cheap but the first call loads a
+        multi-megabyte stat table, and startup is already the slowest part of
+        this app. Someone who never price-checks never pays for it.
+        """
+        if self._trade_api is None:
+            from ..trade.api import TradeAPI
+
+            self._trade_api = TradeAPI(self.config)
+        return self._trade_api
+
+    def open_price_check(self, clipboard_text: str) -> None:
+        from ..trade import item as trade_item
+        from .price_window import PriceCheckWindow
+
+        parsed = trade_item.parse(clipboard_text)
+        if parsed is None:
+            toast.show("아이템 정보를 읽지 못했습니다.\n아이템 위에서 다시 시도해주세요.")
+            return
+
+        # One window, reused: price checking is a rapid-fire activity (hover,
+        # press, glance, move on) and leaving a trail of windows behind would
+        # bury the game within a dozen items.
+        existing = self._price_window
+        if existing is not None and existing.winfo_exists():
+            existing.close()
+        self._price_window = PriceCheckWindow(self, self.config, self.trade_api(), parsed)
+        self._ensure_league()
+
+    def _ensure_league(self) -> None:
+        """Fill in a blank league setting from the site's own list.
+
+        Done in the background on first use so a new league costs the user no
+        settings change: the temporary league is the first entry the site
+        returns that is not a permanent one.
+        """
+        trade = self.config.data.setdefault("trade", {})
+        if trade.get("league"):
+            return
+
+        def resolve() -> None:
+            try:
+                leagues = self.trade_api().leagues()
+            except Exception:
+                logger.debug("could not resolve the current league", exc_info=True)
+                return
+            permanent = {"Standard", "Hardcore", "Ruthless", "Hardcore Ruthless"}
+            for entry in leagues:
+                name = entry.get("id", "")
+                if name and name not in permanent and "SSF" not in name:
+                    trade["league"] = name
+                    self.after(0, self.config.save)
+                    logger.info("trade league resolved: %s", name)
+                    return
+
+        threading.Thread(target=resolve, name="league-lookup", daemon=True).start()
 
     def _open_route(self, mode: str) -> None:
         existing = self._route_windows.get(mode)

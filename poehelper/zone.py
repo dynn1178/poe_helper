@@ -194,6 +194,15 @@ class ZoneTracker:
     def enabled(self) -> bool:
         return bool(self._settings().get("enabled", True))
 
+    def _wanted(self) -> bool:
+        """Whether the log is worth tailing this pass.
+
+        Zone detection is not its only consumer: the whisper panel subscribes
+        to the same lines, so "zone detection is off" no longer means "nobody
+        wants these".
+        """
+        return self.enabled() or bool(_line_listeners)
+
     def _extra_towns(self) -> set[str]:
         return {t.strip() for t in self._settings().get("extra_town_names", []) if t.strip()}
 
@@ -241,7 +250,7 @@ class ZoneTracker:
         handle = None
         try:
             while not self._stop.is_set():
-                if not self.enabled():
+                if not self._wanted():
                     self._sleep(self._RETRY_SEC)
                     continue
                 if handle is None:
@@ -304,12 +313,17 @@ class ZoneTracker:
         data = getattr(self, "_buffer", b"") + chunk
         lines = data.split(b"\n")
         self._buffer = lines.pop()  # keep the partial trailing line
+        zone_wanted = self.enabled()
         for raw in lines:
-            match = _SCENE_RE.search(raw.decode("utf-8", errors="replace"))
-            if match:
-                name = match.group(1).strip()
-                if name not in _PLACEHOLDERS:
-                    self._set_zone(name)
+            line = raw.decode("utf-8", errors="replace").rstrip()
+            if zone_wanted:
+                match = _SCENE_RE.search(line)
+                if match:
+                    name = match.group(1).strip()
+                    if name not in _PLACEHOLDERS:
+                        self._set_zone(name)
+            if _line_listeners:
+                _notify_line(line)
         return handle, True
 
 
@@ -385,3 +399,36 @@ def _notify(name: str, kind: str) -> None:
             callback(name, kind)
         except Exception:
             logger.exception("zone listener failed")
+
+
+# ---------------------------------------------------------------------------
+# Raw line feed (used by whispers.py)
+# ---------------------------------------------------------------------------
+# Separate from the zone listeners above: those fire on a parsed event a few
+# times an hour, these fire on every line the client writes. A subscriber
+# here is signing up for the firehose and must filter cheaply.
+_line_listeners: list = []
+
+
+def on_log_line(callback) -> None:
+    """Register ``callback(line)`` for every new line in the client log.
+
+    Registering also makes the tracker tail the file even when zone detection
+    itself is off. Callbacks run on the tracker's thread, so anything touching
+    Tk must marshal itself back onto the main loop.
+    """
+    if callback not in _line_listeners:
+        _line_listeners.append(callback)
+
+
+def remove_log_line_listener(callback) -> None:
+    if callback in _line_listeners:
+        _line_listeners.remove(callback)
+
+
+def _notify_line(line: str) -> None:
+    for callback in list(_line_listeners):
+        try:
+            callback(line)
+        except Exception:
+            logger.exception("log line listener failed")

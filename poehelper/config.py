@@ -78,6 +78,9 @@ DEFAULT_HOTKEYS = {
     "show_image_1": "ctrl+num 1",
     "show_image_2": "ctrl+num 2",
     "show_image_3": "ctrl+num 3",
+    # Not ctrl+d, which this app already uses for the identify scroll -- the
+    # collision would price-check every time a scroll was used.
+    "price_check": "alt+d",
 }
 
 # Grid dimensions of each clickable game area, in cells. The pickers draw
@@ -108,6 +111,7 @@ DEFAULTS: dict[str, Any] = {
         # scale factor rather than a width/height.
         "layout_poe1": {"x": 200, "y": 200, "scale": 1.0, "alpha": 0.9},
         "memo": {"x": 160, "y": 160, "w": 480, "h": 520},
+        "price_check": {"x": 300, "y": 180, "w": 640, "h": 660},
     },
     "links": deepcopy(DEFAULT_LINKS),
     "hotkeys": deepcopy(DEFAULT_HOTKEYS),
@@ -151,12 +155,44 @@ DEFAULTS: dict[str, Any] = {
         "extra_town_names": [],   # affects the status label only
         "route_follow": True,     # levelling route follows the zone
     },
+    # Incoming whisper notifications (see whispers.py, gui/whisper_panel.py).
+    "whisper": {
+        "enabled": True,
+        "open_on_start": True,
+        "hide_after_sec": 5,     # cards hide; the thin bar stays
+        "keep_minutes": 30,      # older cards are swept up
+        # What the three reply buttons send. Editable because the wording is
+        # a matter of taste, and because a seller may want Korean instead.
+        "replies": {
+            "thanks": "Thank you very much! Have a great day.",
+            "wait": "Sorry, could you please wait a moment? I will invite you shortly.",
+            "sold": "I am sorry, that item is already sold. Thank you for your interest!",
+        },
+    },
+    # Item price checking against the trade site (see trade/).
+    "trade": {
+        # "kakao" (한국 카카오 거래소) or "official" (pathofexile.com).
+        "realm": "kakao",
+        # Blank means "whatever the site currently calls the temp league",
+        # resolved on first use so a new league needs no setting change.
+        "league": "",
+        # The site's status option. "available" (즉시 구입 및 직접 거래) rather
+        # than a buyout-only search: most currency is listed for direct trade
+        # and a buyout filter hides all of it.
+        "status": "available",
+        "indexed": "",            # listing age; blank = 언제든
+        "auto_search": True,      # search as soon as the window opens
+        "result_count": 10,
+        # Point size for the price window. A setting rather than a constant
+        # because how big "readable" is depends on the monitor it lands on.
+        "font_size": 13,
+    },
     # Tuning for "which cells did the search box highlight". Exposed because
     # the exact colour depends on the monitor/gamma/HDR profile, and a
     # detector that cannot be adjusted is one that silently picks the wrong
-    # items -- or nothing at all -- on somebody else's PC. The 좌표
-    # 캘리브레이션 tab's 검색 인식 테스트 window edits these against a real
-    # screenshot rather than by guesswork. See image_search.py.
+    # items -- or nothing at all -- on somebody else's PC. The 좌표 설정
+    # tab's 검색 인식 테스트 window edits these against a real screenshot
+    # rather than by guesswork. See image_search.py.
     "detection": {
         "edge_coverage": 0.85,   # how much of a cell edge must be highlight
         "min_edges": 2,          # how many of the 4 edges must qualify

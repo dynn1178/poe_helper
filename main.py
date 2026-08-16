@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 import sys
 
-from poehelper import elevation, paths, single_instance, version, zone
+from poehelper import elevation, paths, single_instance, version, whispers, zone
 from poehelper.config import Config
 from poehelper.flask_timer import FlaskTimer
 from poehelper.gui.app import App
@@ -82,6 +82,12 @@ def main() -> None:
     zone.set_tracker(zone_tracker)
     zone_tracker.start()
 
+    # Rides on the zone tracker's tail of the same log rather than opening
+    # it again, and only subscribes while the feature is on.
+    whisper_monitor = whispers.WhisperMonitor(config)
+    whispers.set_monitor(whisper_monitor)
+    whisper_monitor.start()
+
     hotkey_manager = HotkeyManager(config)
     app = App(config, hotkey_manager, actions=None)  # actions wired below
 
@@ -101,6 +107,7 @@ def main() -> None:
     hotkey_manager.set_handler("quad_stash_pull_filtered", actions.quad_stash_pull_filtered)
     hotkey_manager.set_handler("inventory_pull_filtered", actions.inventory_pull_filtered)
     hotkey_manager.set_handler("stash_dump_all", actions.stash_dump_all)
+    hotkey_manager.set_handler("price_check", actions.price_check)
     # restart_app is deliberately not bound to a key any more -- it is a
     # button in the bottom bar (see gui/app.py _build_bottom_bar).
 
@@ -123,10 +130,12 @@ def main() -> None:
     config.on_change(image_display.rebuild)
     config.on_change(minefield.rebuild)
     config.on_change(hold_clicker.rebuild)
+    config.on_change(whisper_monitor.refresh)
     hotkey_manager.apply()
 
     def do_exit() -> None:
         zone_tracker.stop()
+        whisper_monitor.stop()
         flask_timer.stop()
         hotkey_manager.unregister_all()
         try:
@@ -146,6 +155,11 @@ def main() -> None:
     # already the slowest part of this app. 4s in, the window is up and
     # usable, and a dialog appearing then reads as "it found something"
     # rather than as part of loading.
+    # Late enough that the main window is up: the panel is a topmost child
+    # of it, and one created mid-startup lands under the window still being
+    # revealed.
+    app.after(1500, app.open_whisper_panel_on_start)
+
     app.after(4000, app.check_for_updates_on_start)
 
     app.mainloop()

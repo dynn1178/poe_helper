@@ -85,14 +85,31 @@ def click_restore(x: int, y: int, button: str = "left", settle_ms: int = 10) -> 
     move_to(*origin)
 
 
-def send_chat_message(text: str) -> None:
-    """Chat macro sequence: open chat, clear whatever's already typed in the
-    box, paste the configured phrase, submit. Called on hotkey *release*
-    (see HotkeyManager) so a still-held modifier can't collide with the
-    Enter below; the explicit key_up()s here are a second line of defense
-    in case a driver reports the release-edge slightly early. Delays are
-    real (not 1ms) because the game's chat box needs a moment to actually
-    take focus/selection between each step, or steps land on each other."""
+def copy_hovered_item() -> None:
+    """Ask the game to put the hovered item's text on the clipboard.
+
+    Ctrl+C over an item is the client's own feature; this only presses the
+    keys. The modifiers are released first for the same reason as the chat
+    macros -- the hotkey that triggered this may still be held.
+    """
+    for mod in ("alt", "shift"):
+        key_up(mod)
+    time.sleep(0.02)
+    pydirectinput.keyDown("ctrl")
+    press("c")
+    pydirectinput.keyUp("ctrl")
+
+
+def open_chat_box() -> None:
+    """Open the game's chat input and empty it.
+
+    Split out of send_chat_message so a caller can stop after the typing and
+    leave the caret in the box. Called on hotkey *release* (see HotkeyManager)
+    so a still-held modifier can't collide with the Enter; the explicit
+    key_up()s are a second line of defense in case a driver reports the
+    release-edge slightly early. Delays are real (not 1ms) because the game's
+    chat box needs a moment to take focus/selection between each step.
+    """
     for mod in ("alt", "ctrl", "shift"):
         key_up(mod)
     time.sleep(0.03)
@@ -106,11 +123,20 @@ def send_chat_message(text: str) -> None:
     press("backspace")  # ...and clear it
     time.sleep(0.02)
 
+
+def paste_into_chat(text: str) -> None:
+    """Paste rather than type: the phrases are Korean as often as not, and
+    pydirectinput's key table only covers ASCII."""
     pyperclip.copy(text)
     time.sleep(0.02)
     pydirectinput.keyDown("ctrl")
-    press("v")  # paste the macro phrase
+    press("v")
     pydirectinput.keyUp("ctrl")
     time.sleep(0.03)
 
+
+def send_chat_message(text: str) -> None:
+    """Chat macro sequence: open chat, clear it, paste the phrase, submit."""
+    open_chat_box()
+    paste_into_chat(text)
     press("enter")  # submit

@@ -21,6 +21,11 @@ config.json
 config.json.*
 *.log
 
+# Trade API data cached next to the program (a few MB, refreshed weekly by
+# trade/api.py). Regenerated on demand, and version-specific to the league --
+# not something to ship or track.
+cache/
+
 # Backups made by the app and by maintenance scripts
 *.bak
 *.bak-*

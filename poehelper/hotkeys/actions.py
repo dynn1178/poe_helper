@@ -189,6 +189,54 @@ class GameActions:
         input_io.press("v")
         input_io.key_up("ctrl")
 
+    # ---- 아이템 가격 확인 (거래소 검색) ----------------------------------
+    def price_check(self) -> None:
+        """Copy the hovered item out of the game and price it.
+
+        Runs on the keyboard hook's thread, so the window itself is opened
+        back on the Tk loop. The clipboard is restored afterwards: this
+        borrows it from whatever the user had copied, and silently eating a
+        stash-tab name they were about to paste is not an acceptable price
+        for a price check.
+        """
+        import pyperclip
+
+        from ..trade import item as trade_item
+
+        try:
+            previous = pyperclip.paste()
+        except Exception:
+            previous = ""
+
+        try:
+            input_io.copy_hovered_item()
+            # The client writes the clipboard asynchronously; without a beat
+            # here the read below returns whatever was there before.
+            time.sleep(0.14)
+            try:
+                copied = pyperclip.paste()
+            except Exception:
+                logger.debug("could not read the clipboard", exc_info=True)
+                return
+
+            # Whether this is an item is decided by parsing it, not by
+            # comparing against what was on the clipboard before: pressing
+            # the key twice on the same item leaves the two identical, and
+            # so does price-checking something the user had already copied.
+            if trade_item.parse(copied) is not None:
+                self.root.after(0, self.root.open_price_check, copied)
+            else:
+                toast.show("아이템 위에 마우스를 올린 상태에서 눌러주세요.")
+        finally:
+            # Always, even if the above raised: this borrows the clipboard,
+            # and keeping someone's copied text hostage because a price
+            # check failed is not a trade worth making.
+            if previous:
+                try:
+                    pyperclip.copy(previous)
+                except Exception:
+                    logger.debug("could not restore the clipboard", exc_info=True)
+
     # ---- 보관함 -> 인벤: 검색으로 강조된 아이템만 -----------------------
     _MAX_PASSES = 12
     # Clicks one run is allowed to send. Pulling out of a stash stops well
@@ -305,7 +353,7 @@ class GameActions:
             # window is the thing that tells those apart.
             toast.show(
                 f"{label}: 검색으로 강조된 아이템을 찾지 못했습니다.\n"
-                "검색어가 맞는지 확인하고, 계속 안 되면 '좌표 캘리브레이션' 탭의\n"
+                "검색어가 맞는지 확인하고, 계속 안 되면 '좌표 설정' 탭의\n"
                 "'검색 인식 테스트'로 인식 상태를 확인해주세요.",
                 duration_ms=4200,
             )
