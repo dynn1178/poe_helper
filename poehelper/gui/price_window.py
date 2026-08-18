@@ -1,7 +1,8 @@
 """The price-check window: what the trade site says an item is worth.
 
-Opened by a hotkey pressed over an item in game, and closed with Esc or
-space a few seconds later. Everything about it is shaped by that: it comes
+Opened by a hotkey pressed over an item in game, and closed a few seconds
+later by Esc, by space, or simply by clicking somewhere else -- back into
+the game, most of the time. Everything about it is shaped by that: it comes
 up already holding an answer rather than a form to fill in, and the controls
 exist to adjust a search that missed rather than to build one from scratch.
 
@@ -22,7 +23,10 @@ button is the trigger.
 """
 from __future__ import annotations
 
+import ctypes
 import logging
+import os
+import sys
 import threading
 import tkinter as tk
 import webbrowser
@@ -89,6 +93,64 @@ TRISTATE_FILTERS = [
 TRISTATE_CHOICES = [("", "모두"), ("true", "예"), ("false", "아니요")]
 
 SORT_OPTIONS = [("indexed", "최근 등록순"), ("price", "가격 낮은순")]
+
+# ---------------------------------------------------------------------------
+# "click anywhere else and it goes away"
+# ---------------------------------------------------------------------------
+# Asked of Windows on a timer rather than answered from Tk's own <FocusOut>.
+# This window is override-redirect (no titlebar), and such a window cannot
+# hold focus reliably on Windows -- the dropdown popup in
+# widgets/hotkey_picker.py hit exactly that and had to abandon <FocusOut> for
+# the same reason. On top of that the click that dismisses this window is
+# usually a click *into the game*, which is a different process entirely and
+# never reaches our event loop at all.
+#
+# 110ms: fast enough that the window is gone before the click it reacts to
+# has finished registering in game, cheap enough to run for the seconds this
+# window is on screen (two GetAsyncKeyState calls and, only on a fresh press,
+# one WindowFromPoint).
+_OUTSIDE_POLL_MS = 110
+_VK_LBUTTON, _VK_RBUTTON = 0x01, 0x02
+_DOWN_BIT = 0x8000
+
+if sys.platform == "win32":
+    _async_key_state = ctypes.windll.user32.GetAsyncKeyState
+    _async_key_state.argtypes = [ctypes.c_int]
+    _async_key_state.restype = ctypes.c_short
+else:  # tests only
+    _async_key_state = None
+
+
+def _mouse_button_down() -> bool:
+    if _async_key_state is None:
+        return False
+    return any(
+        _async_key_state(vk) & _DOWN_BIT for vk in (_VK_LBUTTON, _VK_RBUTTON)
+    )
+
+
+def _point_is_ours(x: int, y: int) -> bool:
+    """Does the window under (x, y) belong to this process?
+
+    Not "is it inside the price window": CustomTkinter's option menus drop
+    their list into a separate popup window that extends past this window's
+    edges, and treating a click on one of those as "outside" would close the
+    window in the middle of choosing a filter. Every such popup is ours, so
+    ownership -- rather than geometry -- is the question worth asking.
+    """
+    try:
+        import win32gui
+        import win32process
+
+        hwnd = win32gui.WindowFromPoint((x, y))
+        if not hwnd:
+            return False
+        _thread, pid = win32process.GetWindowThreadProcessId(hwnd)
+        return pid == os.getpid()
+    except Exception:
+        # Better to leave the window open than to close it on a guess.
+        logger.debug("could not identify the window under the cursor", exc_info=True)
+        return True
 
 
 class _ModRow:
@@ -169,6 +231,12 @@ class PriceCheckWindow(ctk.CTkToplevel):
         self._resize_origin: tuple[int, int, int, int] | None = None
         self._pending_move: tuple[int, int] | None = None
         self._move_scheduled = False
+        # Seeded from the real button state, not from False: the window opens
+        # on a hotkey that may well be pressed with a mouse button already
+        # held, and starting at False would read that hold as a fresh click
+        # and close the window before it had finished appearing.
+        self._mouse_was_down = _mouse_button_down()
+        self._outside_watch: str | None = None
 
         size = self.font_size
         self.font = (theme.FONT_FAMILY, size)
@@ -201,6 +269,7 @@ class PriceCheckWindow(ctk.CTkToplevel):
         self.bind("<Return>", lambda _e: self.search())
         self.protocol("WM_DELETE_WINDOW", self.close)
         self.bind("<Configure>", self._on_configure)
+        self._outside_watch = self.after(_OUTSIDE_POLL_MS, self._watch_outside_click)
 
         if config.data.get("trade", {}).get("auto_search", True):
             self.after(80, self.search)
@@ -779,6 +848,43 @@ class PriceCheckWindow(ctk.CTkToplevel):
         self.close()
         return "break"
 
+    # ---- dismissal on a click elsewhere ------------------------------------
+    def _watch_outside_click(self) -> None:
+        """Close when a mouse button goes down over something that isn't ours.
+
+        Only the press *edge* counts, and only where the cursor was at that
+        moment: dragging the window by its header ends with the button being
+        released well outside it, and a position sampled any later than the
+        press would read that as a click on the game.
+        """
+        if self._closed:
+            return
+        self._outside_watch = None
+        if not self.app_config.data.get("trade", {}).get("close_on_outside_click", True):
+            self._mouse_was_down = _mouse_button_down()
+        else:
+            down = _mouse_button_down()
+            pressed = down and not self._mouse_was_down
+            self._mouse_was_down = down
+            if pressed and not self._cursor_over_us():
+                logger.debug("price check closed by a click outside the window")
+                self.close()
+                return
+        self._outside_watch = self.after(_OUTSIDE_POLL_MS, self._watch_outside_click)
+
+    def _cursor_over_us(self) -> bool:
+        try:
+            x, y = self.winfo_pointerxy()
+        except tk.TclError:
+            return True
+        try:
+            left, top = self.winfo_rootx(), self.winfo_rooty()
+            if left <= x < left + self.winfo_width() and top <= y < top + self.winfo_height():
+                return True
+        except tk.TclError:
+            return True
+        return _point_is_ours(x, y)
+
     def _open_browser(self) -> None:
         if self._search_id:
             webbrowser.open(self.api.search_url(self._search_id))
@@ -798,6 +904,12 @@ class PriceCheckWindow(ctk.CTkToplevel):
 
     def close(self) -> None:
         self._closed = True
+        if self._outside_watch is not None:
+            try:
+                self.after_cancel(self._outside_watch)
+            except tk.TclError:
+                pass
+            self._outside_watch = None
         trade = self.app_config.data.setdefault("trade", {})
         trade["status"] = self._status_option
         indexed = getattr(self, "indexed_var", None)

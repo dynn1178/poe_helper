@@ -1,6 +1,10 @@
-"""System tray icon (requirement #12): closing the main window minimizes to
-tray instead of exiting, so hotkeys keep running while the player tabs back
-into the game."""
+"""System tray icon (requirement #12): somewhere for the window to go while
+the hotkeys keep running and the player is tabbed into the game.
+
+Reached through the 트레이로 최소화 button rather than through the window's
+X -- X quits, the way it does everywhere else on the desktop. 열기 brings the
+window back, 종료 ends the program.
+"""
 from __future__ import annotations
 
 import threading

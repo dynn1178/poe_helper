@@ -129,6 +129,21 @@ class HotkeyManager:
                 if b:
                     bindings.append(b)
 
+        # Saved map-search regexes (정규식 tab). Bound the same way as chat
+        # macros -- config rows rather than fixed action ids -- because how
+        # many there are is up to the user.
+        presets = self.config.data.get("map_regex", {}).get("presets", [])
+        for i, preset in enumerate(presets):
+            combo = preset.get("hotkey")
+            pattern = preset.get("pattern", "")
+            if not combo or not pattern:
+                continue
+            fn = self._handlers.get("__paste_map_regex__")
+            if fn:
+                b = self._build(f"map_regex_{i}", combo, lambda p=pattern: fn(p))
+                if b:
+                    bindings.append(b)
+
         self._bindings = bindings
         self._ensure_hook()
         logger.info("registered %d hotkeys", len(bindings))

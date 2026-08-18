@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import random
+import re
 import subprocess
 import time
 import tkinter as tk
@@ -75,6 +76,79 @@ def _region_ok(region: dict | None) -> bool:
 
 def _point_ok(point: dict | None) -> bool:
     return bool(point and "x" in point)
+
+
+# ShellExecuteW reports success as a fake HINSTANCE greater than 32 (the same
+# convention elevation.py relies on for its runas relaunch); anything at or
+# below that is an error code.
+_SHELL_EXECUTE_OK = 32
+_SW_SHOWNORMAL = 1
+
+# "C:\Games\PoE\Client.exe" --nologo   ->   the exe, and the rest.
+#
+# What a Windows shortcut puts in its own 대상 field, and therefore what
+# someone copies out of it into the path box here. Only the two unambiguous
+# spellings are accepted: a quoted target, or one that ends at a known
+# executable extension. Anything else is taken whole, because a bare path
+# with a space in it ("C:\Program Files\x\y.exe") is indistinguishable from
+# a path plus an argument and guessing wrong is worse than not guessing.
+_COMMAND_RE = re.compile(
+    r'^(?:"(?P<quoted>[^"]+)"|(?P<plain>.+?\.(?:exe|com|lnk|bat|cmd)))'
+    r"(?:\s+(?P<args>\S.*))?$",
+    re.IGNORECASE,
+)
+
+
+def _split_command(raw: str) -> tuple[Path, str]:
+    """``(program, arguments)`` for a configured path box."""
+    import os
+
+    raw = raw.strip()
+    whole = Path(os.path.expandvars(raw.strip('"')))
+    if whole.exists():  # a plain path, spaces and all -- never split it
+        return whole, ""
+    match = _COMMAND_RE.match(raw)
+    if match:
+        target = Path(
+            os.path.expandvars(match.group("quoted") or match.group("plain"))
+        )
+        if target.exists():
+            return target, (match.group("args") or "").strip()
+    return whole, ""
+
+
+def _shell_open(target: Path, workdir: str, args: str = "") -> None:
+    """Open *target* the way a double-click in Explorer would.
+
+    Used for everything that is not a plain exe -- ``.lnk`` shortcuts above
+    all, since a shortcut is a file the shell knows how to resolve and
+    CreateProcess does not. ShellExecuteW takes the working directory
+    directly, so the "started from the wrong folder" failure is covered here
+    too.
+
+    The environment cannot be passed per-call the way it can to Popen, so
+    PyInstaller's hand-off variables are lifted out of ``os.environ`` for the
+    duration of the call and put straight back. Without that a shortcut
+    pointing at another onefile-packaged program inherits them and dies on
+    startup -- the same failure ``updater.child_environment`` was written
+    for, arriving by a different route.
+    """
+    import ctypes
+    import os
+
+    stashed = {
+        key: os.environ.pop(key)
+        for key in list(os.environ)
+        if key.startswith("_PYI_") or key == "_MEIPASS2"
+    }
+    try:
+        rc = ctypes.windll.shell32.ShellExecuteW(
+            None, "open", str(target), args or None, workdir, _SW_SHOWNORMAL
+        )
+    finally:
+        os.environ.update(stashed)
+    if rc <= _SHELL_EXECUTE_OK:
+        raise OSError(rc, f"ShellExecuteW refused to open {target}")
 
 
 class GameActions:
@@ -188,6 +262,33 @@ class GameActions:
         input_io.key_down("ctrl")
         input_io.press("v")
         input_io.key_up("ctrl")
+
+    # ---- 저장한 지도 정규식 붙여넣기 (정규식 탭) -------------------------
+    def paste_map_regex(self, pattern: str) -> None:
+        """Put a saved map-search regex on the clipboard and paste it.
+
+        Typed rather than pasted was the alternative, and it is not one:
+        pydirectinput's key table is ASCII, and every fragment in a Korean
+        map filter is Hangul. The clipboard is the only route those
+        characters have into the game.
+
+        Ctrl+A first, because this always goes into a search box that already
+        has something in it -- the previous filter, most often -- and
+        appending to that yields a regex that matches nothing at all.
+        """
+        import pyperclip
+
+        if not pattern:
+            return
+        pyperclip.copy(pattern)
+        # The clipboard write is asynchronous on Windows; pasting immediately
+        # can hand the game whatever was there before.
+        time.sleep(0.06)
+        input_io.key_down("ctrl")
+        input_io.press("a")
+        input_io.press("v")
+        input_io.key_up("ctrl")
+        logger.debug("pasted map regex: %s", pattern)
 
     # ---- 아이템 가격 확인 (거래소 검색) ----------------------------------
     def price_check(self) -> None:
@@ -445,12 +546,69 @@ class GameActions:
 
     # ---- POE 실행 / 프로그램 경로 실행 ---------------------------------
     def launch_path(self, path: str) -> None:
-        if not path:
+        """Run a configured program, shortcut or URL.
+
+        ``subprocess.Popen([path])`` is what this used to be, and it started
+        things that then closed again immediately. Three separate reasons,
+        all of them fixed here:
+
+        *The working directory.* Popen gives the child *our* cwd -- the
+        folder this app was started from. A game or launcher looks for its
+        own data files relative to the directory it is run from, finds
+        nothing there, and exits. Explorer always runs a program from its own
+        folder, which is why the same exe works when double-clicked and not
+        when launched from here.
+
+        *PyInstaller's hand-off variables.* A onefile build (this app, when
+        packaged) tells its own second stage where it unpacked itself through
+        ``_PYI_*``/``_MEIPASS2`` in the environment. Any child inherits them
+        -- and a child that is *also* a onefile build reads them, concludes
+        it is already unpacked, and dies looking for its Python DLL inside
+        our unpack folder. See ``updater.child_environment``, which exists
+        because self-updating hit this first.
+
+        *Not everything is an exe.* CreateProcess -- which is all Popen is --
+        cannot run a ``.lnk`` shortcut, a ``.bat``, or a document at all, so
+        those raised straight out of the old call. Those go through the shell
+        instead, exactly as a double-click in Explorer would.
+
+        Arguments are honoured too (see ``_split_command``), so pasting a
+        shortcut's own 대상 field in here works rather than reporting that a
+        file called ``game.exe --nologo`` does not exist.
+        """
+        from .. import updater
+
+        raw = (path or "").strip()
+        if not raw:
             return
+        if raw.startswith(("http://", "https://")):
+            webbrowser.open(raw)
+            return
+
+        target, args = _split_command(raw)
+        if not target.exists():
+            logger.warning("launch_path: %s does not exist", target)
+            toast.show(f"실행할 파일을 찾을 수 없습니다:\n{target}")
+            return
+
+        workdir = str(target.parent)
         try:
-            if path.startswith("http://") or path.startswith("https://"):
-                webbrowser.open(path)
+            if target.suffix.lower() in (".exe", ".com"):
+                subprocess.Popen(
+                    subprocess.list2cmdline([str(target)])
+                    + (f" {args}" if args else ""),
+                    cwd=workdir,
+                    env=updater.child_environment(),
+                    close_fds=True,
+                    # Detached so the launched program is not tied to this
+                    # app's lifetime -- closing the helper should not take
+                    # the game down with it.
+                    creationflags=_DETACHED_PROCESS | _CREATE_NEW_PROCESS_GROUP,
+                )
             else:
-                subprocess.Popen([path])
+                _shell_open(target, workdir, args)
         except OSError:
-            logger.exception("failed to launch %s", path)
+            logger.exception("failed to launch %s", target)
+            toast.show(f"실행하지 못했습니다:\n{target}")
+        else:
+            logger.info("launched %s (cwd=%s)", target, workdir)

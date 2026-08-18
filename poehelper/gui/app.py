@@ -28,6 +28,7 @@ from . import render, theme
 from .detect_test import DetectTestWindow
 from .layout_window import LayoutWindow
 from .memo_tab import MemoTab
+from .regex_tab import RegexTab
 from .route_window import RouteWindow
 from .update_dialog import UpdateDialog
 from .widgets.hotkey_picker import HotkeyPicker
@@ -249,8 +250,11 @@ class App(ctk.CTk):
         pos = config.data["windows"]["main"]
         # Wider than the original 620: the settings rows are now "? badge |
         # name | control", and at the old width the hotkey pickers and the
-        # five continuous-key dropdowns ran off the right edge.
-        self.geometry(f"720x680+{pos.get('x', 100)}+{pos.get('y', 100)}")
+        # five continuous-key dropdowns ran off the right edge. Widened again
+        # for the 정규식 tab -- nine tab labels is more than 720 fits, and a
+        # tab strip that overflows drops the rightmost tabs off the edge with
+        # no way to reach them.
+        self.geometry(f"780x680+{pos.get('x', 100)}+{pos.get('y', 100)}")
 
         self.tabs = ctk.CTkTabview(self, command=self._on_tab_selected)
         self.tabs.pack(fill="both", expand=True, padx=8, pady=(8, 0))
@@ -273,6 +277,7 @@ class App(ctk.CTk):
             "물약": self._build_flask_tab,
             "게임 단축키": self._build_hotkeys_tab,
             "링크": self._build_links_tab,
+            "정규식": self._build_regex_tab,
             "메모": self._build_memo_tab,
             "레벨업": self._build_levelup_tab,
             "좌표 설정": self._build_calibration_tab,
@@ -286,7 +291,16 @@ class App(ctk.CTk):
 
         self._ensure_tab(next(iter(self._tab_builders)))
 
-        self.protocol("WM_DELETE_WINDOW", self._on_minimize)
+        # X closes the program, rather than hiding it in the tray. Hiding is
+        # what a titlebar X does in a few background utilities and it is
+        # never what it does anywhere else, so the button that every other
+        # window on the desktop uses to quit was the one control here that
+        # quietly did not -- leaving a process still holding the keyboard
+        # hook, still in Task Manager, with no window to say so.
+        #
+        # Minimising to the tray is still a click away: the 트레이로 최소화
+        # button in the bottom bar, which is where it can say what it does.
+        self.protocol("WM_DELETE_WINDOW", self._on_exit)
         self.bind("<Configure>", self._on_configure)
 
         # Reveal the window only once it's actually finished painting.
@@ -1071,6 +1085,27 @@ class App(ctk.CTk):
         self.config.save()
 
     # ---- tab: 메모 --------------------------------------------------------
+    # ---- tab: 정규식 -------------------------------------------------------
+    _REGEX_HELP = (
+        "지도(맵) 검색창에 넣을 정규식을 옵션 체크만으로 만듭니다.\n\n"
+        "• '포함'은 체크한 옵션이 하나라도 있는 지도만 남기고, '제외'는 그런 지도를 "
+        "걸러냅니다.\n"
+        "• 게임 검색창은 50자까지만 받기 때문에 옵션마다 이름 전체가 아니라 짧고 "
+        "구분되는 조각(예: 반사, 관통)을 씁니다. 글자 수는 아래에 표시됩니다.\n"
+        "• 만들어진 정규식은 직접 고쳐 써도 그대로 저장됩니다. 목록에 없는 옵션은 "
+        "'추가 키워드'에 쉼표로 구분해 적으면 됩니다.\n"
+        "• 여러 개를 만들어 두고 각각 단축키를 지정할 수 있습니다. 게임에서 검색창을 "
+        "연 뒤 단축키를 누르면 그 정규식이 붙여넣어집니다."
+    )
+
+    def _build_regex_tab(self, tab: ctk.CTkFrame) -> None:
+        self._build_save_row(tab)
+        title_row, _label = labelled_row(
+            tab, "지도 옵션 정규식 만들기", self._REGEX_HELP, font=theme.FONT_SECTION
+        )
+        title_row.pack(fill="x", padx=8, pady=(8, 0))
+        RegexTab(tab, self.config).pack(fill="both", expand=True)
+
     def _build_memo_tab(self, tab: ctk.CTkFrame) -> None:
         MemoTab(tab, self.config, on_favorite_added=lambda _u: self.refresh_links()).pack(
             fill="both", expand=True
@@ -1179,6 +1214,17 @@ class App(ctk.CTk):
             )
             var.trace_add("write", lambda *_: self._save_paths())
             self.path_vars.append(var)
+
+        ctk.CTkLabel(
+            scroll,
+            text=(
+                "exe 파일, 바로가기(.lnk), 배치 파일 모두 지정할 수 있습니다. "
+                "프로그램은 지정한 파일이 있는 폴더에서 실행되므로, 게임/런처를 exe로 "
+                "직접 지정해도 자기 파일을 찾지 못해 바로 꺼지는 일이 없습니다."
+            ),
+            anchor="w", justify="left", font=theme.FONT_CAPTION,
+            text_color=theme.PRIMARY, wraplength=660,
+        ).pack(fill="x", pady=(4, 0))
 
         ctk.CTkLabel(scroll, text="설정 백업/복원", font=theme.FONT_SECTION).pack(
             anchor="w", pady=(16, 2)
@@ -1334,6 +1380,11 @@ class App(ctk.CTk):
             opts, text="창을 열면 바로 검색", variable=self.trade_auto_var,
             command=self._save_trade,
         ).pack(side="left")
+        self.trade_outside_var = ctk.BooleanVar(value=cfg.get("close_on_outside_click", True))
+        ctk.CTkCheckBox(
+            opts, text="창 밖을 클릭하면 닫기", variable=self.trade_outside_var,
+            command=self._save_trade,
+        ).pack(side="left", padx=(14, 0))
 
         ctk.CTkLabel(
             parent,
@@ -1346,6 +1397,7 @@ class App(ctk.CTk):
         cfg["league"] = self.trade_league_var.get().strip()
         cfg["realm"] = "kakao" if self.trade_realm_var.get().startswith("한국") else "official"
         cfg["auto_search"] = self.trade_auto_var.get()
+        cfg["close_on_outside_click"] = self.trade_outside_var.get()
         try:
             cfg["font_size"] = max(9, min(20, int(self.trade_font_var.get())))
         except ValueError:
@@ -1845,7 +1897,15 @@ class App(ctk.CTk):
         self.config.save()
 
     def _browse_path(self, var: ctk.StringVar) -> None:
-        chosen = filedialog.askopenfilename()
+        # Shortcuts first: picking the .lnk off the desktop is both the
+        # easiest thing to find and the one most likely to work, since it
+        # carries the launcher's own arguments and start-in folder.
+        chosen = filedialog.askopenfilename(
+            filetypes=[
+                ("실행 파일 / 바로가기", "*.exe;*.lnk;*.bat;*.cmd"),
+                ("모든 파일", "*.*"),
+            ]
+        )
         if chosen:
             var.set(chosen)
 
@@ -1976,10 +2036,20 @@ class App(ctk.CTk):
             group.clear()
 
     def _on_exit(self) -> None:
+        """Shut the program down for good -- the X button, the 종료 button
+        and the tray menu's 종료 all land here.
+
+        ``on_request_exit`` is main.py's ``do_exit``, which is where the
+        threads and hooks come down; this only handles what the window itself
+        owns. The fallback matters for the harnesses that build this window
+        without the rest of the app wired up behind it.
+        """
         self.config.save()
         self.close_child_windows()
         if self.on_request_exit:
             self.on_request_exit()
+        else:
+            self.destroy()
 
     def _on_configure(self, _event: tk.Event) -> None:
         pos = self.config.data["windows"]["main"]

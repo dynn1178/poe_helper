@@ -8,7 +8,9 @@ one place.
 from __future__ import annotations
 
 import logging
+import os
 import sys
+import threading
 
 from poehelper import elevation, paths, single_instance, version, whispers, zone
 from poehelper.config import Config
@@ -20,6 +22,11 @@ from poehelper.hotkeys.manager import HotkeyManager
 from poehelper.hotkeys.toggles import HoldClicker, ImageKeyDisplay, MinefieldHold
 
 _LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
+
+# How long an orderly shutdown gets before the process is killed outright.
+# Generous: everything here is stopped explicitly and every thread this app
+# starts is a daemon, so reaching this at all means something went wrong.
+_EXIT_GRACE_SEC = 3.0
 
 
 def _setup_logging() -> None:
@@ -117,6 +124,9 @@ def main() -> None:
         input_io.send_chat_message(text)
 
     hotkey_manager.set_handler("__send_chat_macro__", send_chat_macro)
+    # Same shape as the chat macros: one config row per binding, so the
+    # handler takes the payload rather than there being a fixed action id.
+    hotkey_manager.set_handler("__paste_map_regex__", actions.paste_map_regex)
 
     # Hold/release gestures that bypass the simple edge-triggered hotkey model.
     minefield = MinefieldHold(config)
@@ -134,6 +144,9 @@ def main() -> None:
     hotkey_manager.apply()
 
     def do_exit() -> None:
+        """Bring the whole program down. Reached from the window's X, its
+        종료 button, and the tray menu."""
+        logging.info("shutting down")
         app.close_child_windows()
         zone_tracker.stop()
         whisper_monitor.stop()
@@ -143,6 +156,19 @@ def main() -> None:
             tray.stop()
         except Exception:
             pass
+
+        # A last-resort watchdog, flagged daemon so it costs nothing when
+        # shutdown goes to plan -- the interpreter exits and the timer goes
+        # with it, never having fired. It exists for when it does not:
+        # a low-level keyboard hook whose thread will not come down, or a
+        # tray icon whose message loop is wedged, leaves a process with no
+        # window that nothing can see and only Task Manager can end. That is
+        # not just untidy -- it keeps the exe file locked, and the updater's
+        # swap script gives up waiting for a release that never comes.
+        watchdog = threading.Timer(_EXIT_GRACE_SEC, lambda: os._exit(0))
+        watchdog.daemon = True
+        watchdog.start()
+
         app.destroy()
 
     tray = TrayIcon(

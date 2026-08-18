@@ -186,6 +186,11 @@ DEFAULTS: dict[str, Any] = {
         "sort": "price",
         "indexed": "1week",
         "auto_search": True,      # search as soon as the window opens
+        # Clicking anywhere that isn't ours -- the game, usually -- closes the
+        # price window. On by default because that is what every other
+        # transient panel over a game does; off for anyone who wants it to
+        # stay put while they click around.
+        "close_on_outside_click": True,
         "result_count": 10,
         # Point size for the price window. A setting rather than a constant
         # because how big "readable" is depends on the monitor it lands on.
@@ -230,6 +235,37 @@ DEFAULTS: dict[str, Any] = {
         "scouring_point": None,
         "item_point": None,
         "cycles": 1,
+    },
+    # Saved map-search regexes (see map_mods.py, gui/regex_tab.py). Each
+    # preset keeps both the ticked mod ids and the string they produced: the
+    # string is what gets pasted into the game and what the user may have
+    # edited by hand, and the ids are what puts the checkboxes back.
+    "map_regex": {
+        "quote": True,           # wrap the whole pattern in "..."
+        "active_id": "danger",
+        "presets": [
+            {
+                "id": "danger",
+                "name": "위험 옵션 제외",
+                "mode": "exclude",
+                # Reflect and no-regen are the two that end a map run outright
+                # rather than making it slower; the rest are the usual
+                # can't-be-bothered list.
+                "mods": ["reflect", "no_regen", "no_leech", "max_res"],
+                "extra": "",
+                "pattern": '"!반사|재생|흡수|최대치"',
+                "hotkey": "",
+            },
+            {
+                "id": "reward",
+                "name": "보상 옵션 포함",
+                "mode": "include",
+                "mods": ["quantity", "pack_size"],
+                "extra": "",
+                "pattern": '"수량|규모"',
+                "hotkey": "",
+            },
+        ],
     },
     "memos": [{"id": "memo1", "name": "메모 1", "text": ""}],
     "active_memo_id": "memo1",

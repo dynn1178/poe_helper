@@ -4,6 +4,8 @@
     python release.py 1.1.0            # ...or say which version
     python release.py 1.1.0 --dry-run  # do everything except push and publish
     python release.py --check          # verify the current state, build nothing
+    python release.py --ask            # ask for the version and the release
+                                       # notes first (what release.bat runs)
 
 Runnable as ``py release.py`` too -- the build step resolves the venv
 interpreter itself (see build_python), because the Windows launcher does not.
@@ -203,7 +205,16 @@ def check_build_python() -> None:
 
 def build() -> None:
     if DIST_EXE.exists():
-        DIST_EXE.unlink()
+        try:
+            DIST_EXE.unlink()
+        except PermissionError:
+            # Windows will not let a running image be deleted, and the
+            # obvious way to test a build is to leave it running. Said
+            # plainly here rather than as a traceback several frames deep.
+            raise Failed(
+                f"{DIST_EXE} 을(를) 지울 수 없습니다 - 실행 중인 것 같습니다.\n"
+                "프로그램을 종료(창의 X 또는 트레이 아이콘 -> 종료)한 뒤 다시 실행하세요."
+            ) from None
     run(build_python(), "-m", "PyInstaller", "--noconfirm", "build.spec")
     if not DIST_EXE.exists():
         raise Failed(f"빌드 후 {DIST_EXE} 이(가) 없습니다.")
@@ -213,15 +224,30 @@ def build() -> None:
     ok(f"빌드 완료: {DIST_EXE.name} ({size_mb:.1f} MB)")
 
 
-def notes_for(tag: str) -> str:
-    """Release notes from the commits since the last tag."""
+def notes_for(tag: str, written: str = "") -> str:
+    """The release notes to publish.
+
+    *written* is what the user typed (``--ask``/``--notes-file``) and wins
+    when there is any: commit subjects are a log of how the work happened,
+    which is a different thing from what changed for someone using the
+    program, and only the second belongs in an update dialog they are shown
+    mid-game. Commit subjects remain the fallback so the non-interactive path
+    is unchanged.
+
+    The compare link is appended either way -- it is the one part nobody
+    should have to write out, and it is what anyone wanting the full detail
+    goes looking for.
+    """
     try:
         previous = run("git", "describe", "--tags", "--abbrev=0", capture=True)
         span = f"{previous}..HEAD"
     except Failed:
         previous, span = "", "HEAD"
-    log = run("git", "log", span, "--pretty=format:- %s", "--no-merges", capture=True)
-    body = log or "- 변경 내용 없음"
+    if written.strip():
+        body = written.strip()
+    else:
+        log = run("git", "log", span, "--pretty=format:- %s", "--no-merges", capture=True)
+        body = log or "- 변경 내용 없음"
     if previous:
         body += (
             f"\n\n**전체 변경 내역**: "
@@ -230,8 +256,8 @@ def notes_for(tag: str) -> str:
     return body
 
 
-def publish(tag: str, dry_run: bool) -> None:
-    notes = notes_for(tag)
+def publish(tag: str, dry_run: bool, written_notes: str = "") -> None:
+    notes = notes_for(tag, written_notes)
     print("\n--- 릴리즈 노트 미리보기 ---")
     print(notes)
     print("--- 끝 ---")
@@ -265,6 +291,105 @@ def publish(tag: str, dry_run: bool) -> None:
 
 
 # ---------------------------------------------------------------------------
+# interactive mode (--ask), which is what release.bat runs
+# ---------------------------------------------------------------------------
+def ask(prompt: str, default: str = "") -> str:
+    """One line of input, with *default* used for a bare Enter."""
+    suffix = f" [{default}]" if default else ""
+    try:
+        return input(f"   {prompt}{suffix}: ").strip() or default
+    except EOFError:
+        # Double-clicked with no console attached, or input redirected from
+        # nothing. Carrying on with defaults would publish a release nobody
+        # confirmed, so stop instead.
+        raise Failed("입력을 받을 수 없습니다. 콘솔에서 실행해주세요.") from None
+
+
+def ask_version() -> str:
+    """Which version to publish, offered as the three bumps plus free entry."""
+    (major, minor, patch), _pre = V.parse(V.__version__)
+    choices = {
+        "1": (f"{major}.{minor}.{patch + 1}", "패치 - 버그 수정만"),
+        "2": (f"{major}.{minor + 1}.0", "마이너 - 기능 추가"),
+        "3": (f"{major + 1}.0.0", "메이저 - 설정 형식이 바뀌어 되돌릴 수 없을 때"),
+    }
+    print(f"   현재 버전: {V.display()}\n")
+    for key, (number, why) in choices.items():
+        print(f"     {key}) {number:<10} {why}")
+    print("     4) 직접 입력\n")
+
+    picked = ask("어느 버전으로 올릴까요?", "1")
+    if picked in choices:
+        return choices[picked][0]
+    if picked == "4":
+        typed = ask("버전 (예: 1.3.0)").lstrip("vV")
+    else:
+        # A version typed straight in at the menu rather than the digit next
+        # to it -- an obvious thing to do, and refusing it would be pedantry.
+        typed = picked.lstrip("vV")
+    if not re.match(r"^\d+\.\d+\.\d+", typed):
+        raise Failed(f"버전 형식이 아닙니다: {typed!r} (예: 1.3.0)")
+    return typed
+
+
+def ask_notes() -> str:
+    """The 'what changed' list, as the user wants it shown to users.
+
+    Line at a time, ending on a blank one. A text editor would be the other
+    way to do this and it is worse: it means a temp file, an $EDITOR that may
+    not exist, and a window that opens somewhere behind the console.
+    """
+    print("   이 버전에서 바뀐 내용을 한 줄에 하나씩 적어주세요.")
+    print("   업데이트 알림 창에서 사용자가 그대로 보게 됩니다.")
+    print("   다 적었으면 빈 줄에서 Enter를 누르세요.")
+    print("   아무것도 적지 않으면 커밋 메시지로 자동 작성합니다.\n")
+
+    lines: list[str] = []
+    while True:
+        try:
+            line = input("   - ").rstrip()
+        except EOFError:
+            break
+        if not line:
+            break
+        # Typed with its own bullet, or a markdown heading: left alone.
+        # Anything else gets one, so the notes render as a list on GitHub
+        # and in the app's update dialog regardless of how they were typed.
+        lines.append(line if line.startswith(("-", "*", "#")) else f"- {line}")
+
+    if not lines:
+        warn("입력 없음 - 커밋 메시지로 릴리즈 노트를 작성합니다")
+    return "\n".join(lines)
+
+
+def commit_pending_changes(default_message: str) -> None:
+    """Offer to commit a dirty tree rather than just refusing to proceed.
+
+    ``check_repo_clean`` stops the release when there is uncommitted work,
+    for a good reason -- the exe would not match the tag it is published
+    under. But "go and commit, then start again" is a strange thing for a
+    release script to say when committing is a step of releasing, and the
+    long build has not started yet.
+    """
+    dirty = run("git", "status", "--porcelain", capture=True)
+    if not dirty:
+        return
+    print("   커밋하지 않은 변경이 있습니다:\n")
+    for line in dirty.splitlines():
+        print(f"     {line}")
+    print()
+    if ask("이 변경을 모두 커밋하고 계속할까요? (y/n)", "y").lower() != "y":
+        raise Failed(
+            "커밋하지 않은 변경이 있어 중단합니다. "
+            "릴리즈되는 exe와 태그가 서로 다른 내용이 되어버립니다."
+        )
+    message = ask("커밋 메시지", default_message)
+    run("git", "add", "-A")
+    run("git", "commit", "-m", message)
+    ok(f"커밋했습니다: {message}")
+
+
+# ---------------------------------------------------------------------------
 def main() -> int:
     parser = argparse.ArgumentParser(description="Build and publish a release.")
     parser.add_argument("new_version", nargs="?",
@@ -273,6 +398,10 @@ def main() -> int:
                         help="빌드와 검사는 하되 푸시/업로드는 하지 않음")
     parser.add_argument("--check", action="store_true",
                         help="검사만 하고 빌드하지 않음")
+    parser.add_argument("--ask", action="store_true",
+                        help="버전과 업데이트 내용을 물어본 뒤 진행 (release.bat)")
+    parser.add_argument("--notes-file", metavar="PATH",
+                        help="릴리즈 노트를 이 파일에서 읽음 (UTF-8)")
     args = parser.parse_args()
 
     try:
@@ -288,7 +417,14 @@ def main() -> int:
             print("이상 없습니다.")
             return 0
 
-        if args.new_version:
+        written_notes = ""
+        if args.notes_file:
+            written_notes = Path(args.notes_file).read_text(encoding="utf-8")
+
+        if args.ask and not args.new_version:
+            step("버전 정하기")
+            new = ask_version()
+        elif args.new_version:
             new = args.new_version.lstrip("vV")
         else:
             # No version given: bump the patch, the same shorthand the
@@ -312,8 +448,19 @@ def main() -> int:
                 + ("" if existing else
                    f"\n첫 릴리즈라면 현재 버전 그대로 `py release.py {V.__version__}` 로 실행하세요.")
             )
-        check_repo_clean()
         check_tag_free(tag)
+
+        # Asked before the build, not after: the build is the slow part, and
+        # having to sit through it before being asked anything is how a
+        # release script stops getting used.
+        if args.ask and not written_notes:
+            step(f"{tag} 업데이트 내용")
+            written_notes = ask_notes()
+
+        if args.ask:
+            step("커밋")
+            commit_pending_changes(f"release prep {tag}")
+        check_repo_clean()
 
         step(f"버전 올리기 {V.__version__} -> {new}")
         set_version(new)
@@ -330,7 +477,7 @@ def main() -> int:
             return 1
 
         step("공개")
-        publish(tag, args.dry_run)
+        publish(tag, args.dry_run, written_notes)
 
         step("완료")
         print(f"   다운로드 페이지: https://github.com/{V.GITHUB_SLUG}/releases/latest")
