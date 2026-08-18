@@ -117,6 +117,88 @@ def _split_command(raw: str) -> tuple[Path, str]:
     return whole, ""
 
 
+def _focus_running(target: Path) -> bool:
+    """Bring an already-running copy of *target* to the front. True if found.
+
+    Clicking 실행 on a program that is already open should show it, not start
+    another one. Left to itself this piles up: a launcher that takes a few
+    seconds to appear gets clicked again, and each click is another process --
+    three copies of a 470MB build planner, none of them obviously the real
+    one, is how this was found.
+
+    Matched on the executable's full path, not its name, so two different
+    builds of the same program in different folders stay independent. Only a
+    *visible* window counts: a copy that is running with nothing on screen is
+    the broken state this cannot fix, and refusing to launch then would leave
+    no way out of it.
+    """
+    try:
+        import win32con
+        import win32gui
+        import win32process
+    except ImportError:
+        return False
+
+    wanted = str(target).lower()
+    matches: list[int] = []
+
+    def visit(hwnd: int, _arg) -> None:
+        if not win32gui.IsWindowVisible(hwnd) or not win32gui.GetWindowText(hwnd):
+            return
+        try:
+            _thread, pid = win32process.GetWindowThreadProcessId(hwnd)
+            if _image_path(pid).lower() == wanted:
+                matches.append(hwnd)
+        except Exception:
+            pass
+
+    try:
+        win32gui.EnumWindows(visit, None)
+    except Exception:
+        logger.debug("could not enumerate windows", exc_info=True)
+        return False
+    if not matches:
+        return False
+
+    hwnd = matches[0]
+    try:
+        if win32gui.IsIconic(hwnd):
+            win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+        win32gui.SetForegroundWindow(hwnd)
+    except Exception:
+        # Windows refuses the foreground change when we do not own it; the
+        # window is still restored, which is the part that matters.
+        logger.debug("could not foreground %s", target, exc_info=True)
+    return True
+
+
+def _image_path(pid: int) -> str:
+    """Full path of a process's executable, or "" if it cannot be read.
+
+    ``PROCESS_QUERY_LIMITED_INFORMATION`` rather than the full query right:
+    it is the one an ordinary process is granted for another of the same
+    user, which is what makes this work without the app being elevated.
+    """
+    import ctypes
+
+    PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+    handle = ctypes.windll.kernel32.OpenProcess(
+        PROCESS_QUERY_LIMITED_INFORMATION, False, pid
+    )
+    if not handle:
+        return ""
+    try:
+        size = ctypes.c_ulong(1024)
+        buffer = ctypes.create_unicode_buffer(size.value)
+        if ctypes.windll.kernel32.QueryFullProcessImageNameW(
+            handle, 0, buffer, ctypes.byref(size)
+        ):
+            return buffer.value
+        return ""
+    finally:
+        ctypes.windll.kernel32.CloseHandle(handle)
+
+
 def _shell_open(target: Path, workdir: str, args: str = "") -> None:
     """Open *target* the way a double-click in Explorer would.
 
@@ -589,6 +671,14 @@ class GameActions:
         if not target.exists():
             logger.warning("launch_path: %s does not exist", target)
             toast.show(f"실행할 파일을 찾을 수 없습니다:\n{target}")
+            return
+
+        # Already open? Show that one. Checked before spawning rather than
+        # after, because the second copy is the problem -- once it exists
+        # there is nothing useful to do with it.
+        if _focus_running(target):
+            logger.info("already running, focused instead: %s", target)
+            toast.show(f"이미 실행 중입니다. 창을 앞으로 가져왔습니다.\n{target.name}")
             return
 
         workdir = str(target.parent)

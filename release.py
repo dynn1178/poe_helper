@@ -126,6 +126,33 @@ def check_asset_name() -> None:
     ok(f"자산 이름 일치: {V.ASSET_NAME}")
 
 
+def check_map_fragments() -> None:
+    """Every map-regex fragment still matches options, not explanations.
+
+    Here rather than only in ``check_fragments.py`` because this is exactly
+    what got shipped in 1.2.2: 카오스 as the fragment for "monsters gain extra
+    chaos damage" also matched an affix's damage-type tag and the 중독 rules
+    blurb, so maps were filtered for a reason that was not on them. Nothing
+    about that fails loudly at runtime -- the filter simply lies -- so the
+    check belongs where a release cannot get past it.
+    """
+    script = ROOT / "check_fragments.py"
+    if not script.exists():
+        warn("check_fragments.py 가 없습니다 (지도 정규식 검사 건너뜀)")
+        return
+    proc = subprocess.run(
+        [build_python(), str(script)],
+        cwd=ROOT, text=True, encoding="utf-8", errors="replace",
+        capture_output=True, check=False,
+    )
+    if proc.returncode != 0:
+        raise Failed(
+            "지도 정규식 조각이 실제 옵션이 아닌 줄(설명·구분)에 걸립니다.\n"
+            + (proc.stdout or proc.stderr or "").strip()
+        )
+    ok("지도 정규식 조각이 실제 옵션 줄에만 걸림")
+
+
 def published_releases() -> list[str]:
     """Tags already published on GitHub, newest first (empty if none)."""
     out = run("gh", "release", "list", "--repo", version_slug(),
@@ -410,6 +437,7 @@ def main() -> int:
         check_build_python()
         check_asset_name()
         check_page_links()
+        check_map_fragments()
 
         if args.check:
             check_repo_clean()

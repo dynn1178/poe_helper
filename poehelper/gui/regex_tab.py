@@ -23,20 +23,32 @@ in the middle of sorting a stash tab.
 """
 from __future__ import annotations
 
+import tkinter as tk
 import uuid
 
 import customtkinter as ctk
 
 from .. import map_mods, toast
 from ..config import Config
-from ..map_mods import EXCLUDE, INCLUDE, MapMod
+from ..map_mods import EXCLUDE, INCLUDE, INCLUDE_ALL, MapMod
 from . import theme
 from .widgets.hotkey_picker import HotkeyPicker
 from .widgets.tooltip import Tooltip
 
-_MODE_LABELS = {INCLUDE: "포함", EXCLUDE: "제외"}
+_MODE_LABELS = {INCLUDE: "포함(하나)", INCLUDE_ALL: "포함(모두)", EXCLUDE: "제외"}
 _MODE_BY_LABEL = {label: mode for mode, label in _MODE_LABELS.items()}
 _ALL_CATEGORIES = "전체 분류"
+
+_MODE_HELP = (
+    "포함(하나): 체크한 조건이 하나라도 맞는 지도만 남깁니다.\n"
+    "포함(모두): 체크한 조건을 전부 만족하는 지도만 남깁니다.\n"
+    "                 (조건마다 따옴표로 나눠 적습니다 — 게임이 이걸 AND로 읽습니다)\n"
+    "제외:          체크한 조건이 하나라도 맞는 지도를 걸러냅니다 (맨 앞에 ! 이 붙습니다)."
+)
+
+# Body text for the 검사 window, which inherits whatever appearance mode is
+# in force rather than painting its own surface.
+_TEXT = ("#1d1d1f", "#f2f2f5")
 
 
 class RegexTab(ctk.CTkFrame):
@@ -110,15 +122,12 @@ class RegexTab(ctk.CTkFrame):
         # CTkSegmentedButton raises NotImplementedError from bind().
         mode_label = ctk.CTkLabel(row, text="방식", font=theme.FONT_CAPTION, width=32)
         mode_label.pack(side="left")
-        Tooltip(
-            mode_label,
-            "포함: 체크한 옵션이 하나라도 있는 지도만 남깁니다.\n"
-            "제외: 체크한 옵션이 하나라도 있는 지도를 걸러냅니다 (맨 앞에 ! 이 붙습니다).",
-        )
+        Tooltip(mode_label, _MODE_HELP)
         self.mode_var = ctk.StringVar(value=_MODE_LABELS[EXCLUDE])
         ctk.CTkSegmentedButton(
-            row, values=[_MODE_LABELS[INCLUDE], _MODE_LABELS[EXCLUDE]],
-            variable=self.mode_var, width=120, command=lambda _v: self._regenerate(),
+            row,
+            values=[_MODE_LABELS[INCLUDE], _MODE_LABELS[INCLUDE_ALL], _MODE_LABELS[EXCLUDE]],
+            variable=self.mode_var, width=230, command=lambda _v: self._regenerate(),
         ).pack(side="left", padx=(4, 0))
 
         hotkey_row = ctk.CTkFrame(self, fg_color="transparent")
@@ -173,21 +182,56 @@ class RegexTab(ctk.CTkFrame):
                     self.list_frame, text=mod.category, font=theme.FONT_BODY_STRONG,
                     anchor="w",
                 )
-                self._rows.append((None, None, header))  # type: ignore[arg-type]
-            var = ctk.BooleanVar(value=False)
-            box = ctk.CTkCheckBox(
-                self.list_frame, text=f"{mod.label}   ·   {mod.pattern}",
-                variable=var, font=theme.FONT_CAPTION, checkbox_width=17,
-                checkbox_height=17, command=self._regenerate,
-            )
-            Tooltip(box, f"정규식 조각: {mod.pattern}")
-            self._rows.append((mod, var, box))
+                self._rows.append((None, None, header, None))  # type: ignore[arg-type]
+            self._rows.append(self._build_mod_row(mod))
         self._apply_filter()
+
+    def _build_mod_row(self, mod: MapMod):
+        """``(mod, ticked, widget, threshold)`` for one option.
+
+        Only the mods carrying a number get the extra box, and only those get
+        a frame to hold it -- the other sixty stay a bare checkbox, since
+        CustomTkinter draws every widget onto a canvas of its own and a
+        wrapper each would be sixty canvases bought for nothing.
+        """
+        var = ctk.BooleanVar(value=False)
+        threshold: ctk.StringVar | None = None
+        parent = self.list_frame
+
+        if mod.numeric:
+            parent = ctk.CTkFrame(self.list_frame, fg_color="transparent")
+            threshold = ctk.StringVar(value="")
+            ctk.CTkLabel(
+                parent, text="% 이상", font=theme.FONT_CAPTION,
+                text_color=theme.PRIMARY, width=42, anchor="w",
+            ).pack(side="right")
+            ctk.CTkEntry(
+                parent, textvariable=threshold, width=50, height=24,
+                font=theme.FONT_CAPTION, justify="center", placeholder_text="전체",
+            ).pack(side="right", padx=(4, 2))
+            threshold.trace_add("write", lambda *_: self._regenerate())
+
+        box = ctk.CTkCheckBox(
+            parent, text=f"{mod.label}   ·   {mod.pattern}",
+            variable=var, font=theme.FONT_CAPTION, checkbox_width=17,
+            checkbox_height=17, command=self._regenerate,
+        )
+        box.pack(side="left", fill="x", expand=True) if mod.numeric else None
+        Tooltip(
+            box,
+            f"정규식 조각: {mod.pattern}"
+            + (
+                "\n\n숫자를 적으면 그 값 이상인 지도만 찾습니다.\n"
+                f"예) 100 → {map_mods.fragment_for(mod.id, 100)}"
+                if mod.numeric else ""
+            ),
+        )
+        return (mod, var, parent if mod.numeric else box, threshold)
 
     def _apply_filter(self) -> None:
         needle = self.search_var.get().strip().lower()
         category = self.category_var.get()
-        for mod, _var, widget in self._rows:
+        for mod, _var, widget, _threshold in self._rows:
             if mod is None:  # a category heading
                 visible = not needle and category == _ALL_CATEGORIES
             else:
@@ -205,9 +249,11 @@ class RegexTab(ctk.CTkFrame):
                 widget.pack_forget()
 
     def _clear_checks(self) -> None:
-        for mod, var, _widget in self._rows:
+        for mod, var, _widget, threshold in self._rows:
             if mod is not None:
                 var.set(False)
+                if threshold is not None:
+                    threshold.set("")
         self._regenerate()
 
     # ---- the answer --------------------------------------------------------
@@ -233,6 +279,16 @@ class RegexTab(ctk.CTkFrame):
         ).pack(side="left", fill="x", expand=True)
         ctk.CTkButton(out_row, text="복사", width=54, command=self._copy).pack(
             side="left", padx=(6, 0)
+        )
+        check = ctk.CTkButton(
+            out_row, text="아이템 검사", width=88, command=self._check_item
+        )
+        check.pack(side="left", padx=(6, 0))
+        Tooltip(
+            check,
+            "게임에서 지도에 마우스를 올리고 Ctrl+C 를 누른 뒤 이 버튼을 누르면,\n"
+            "조각 하나하나가 그 지도의 어느 줄에 걸렸는지 보여줍니다.\n"
+            "속성이 아니라 설명·구분 줄에 걸렸다면 그 조각이 잘못된 것입니다.",
         )
         # Edits here are kept: the fragment list is a starting point, and
         # anyone who knows the exact wording they want should be able to just
@@ -260,11 +316,24 @@ class RegexTab(ctk.CTkFrame):
                 mode=_MODE_BY_LABEL.get(self.mode_var.get(), EXCLUDE),
                 extra=self.extra_var.get(),
                 quote=self._store().get("quote", True),
+                thresholds=self._thresholds(),
             )
         )  # which saves via the output trace
 
     def _checked_ids(self) -> list[str]:
-        return [mod.id for mod, var, _w in self._rows if mod is not None and var.get()]
+        return [
+            mod.id for mod, var, _w, _t in self._rows if mod is not None and var.get()
+        ]
+
+    def _thresholds(self) -> dict[str, str]:
+        """Only the ones actually filled in -- an empty box is "any value",
+        not zero, and writing zeros into the preset would make every reward
+        row look like it had a condition on it."""
+        return {
+            mod.id: threshold.get().strip()
+            for mod, _var, _w, threshold in self._rows
+            if mod is not None and threshold is not None and threshold.get().strip()
+        }
 
     def _on_output_changed(self) -> None:
         self._update_counter()
@@ -287,6 +356,93 @@ class RegexTab(ctk.CTkFrame):
         self.clipboard_clear()
         self.clipboard_append(pattern)
         toast.show("정규식을 복사했습니다.")
+
+    # ---- checking against a real map ---------------------------------------
+    def _check_item(self) -> None:
+        """Answer "why did this map match?" against the item on the clipboard.
+
+        A fragment is a few characters of Korean and a map carries far more
+        text than its mods -- affix headers, the rules blurb under a curse,
+        the property lines every map has. A fragment landing on one of those
+        looks exactly like a real hit from the outside, so the only honest
+        way to trust this list is to be able to see where each piece landed.
+        """
+        pattern = self.output_var.get().strip()
+        if not pattern:
+            toast.show("먼저 정규식을 만들어주세요.")
+            return
+        try:
+            text = self.clipboard_get()
+        except tk.TclError:
+            text = ""
+        if "아이템 희귀도" not in text and "아이템 종류" not in text:
+            toast.show(
+                "클립보드에 아이템이 없습니다.\n"
+                "게임에서 지도에 마우스를 올리고 Ctrl+C 를 누른 뒤 다시 눌러주세요."
+            )
+            return
+        matched, report = map_mods.describe_matches(pattern, text)
+        self._show_check_result(pattern, matched, report)
+
+    def _show_check_result(self, pattern: str, matched: bool, report) -> None:
+        mode, _fragments = map_mods.split_pattern(pattern)
+        kept = matched if mode == INCLUDE else not matched
+
+        win = ctk.CTkToplevel(self)
+        win.title("정규식 검사")
+        win.geometry("620x460")
+        win.transient(self.winfo_toplevel())
+        win.attributes("-topmost", True)
+        win.bind("<Escape>", lambda _e: win.destroy())
+
+        head = ctk.CTkFrame(win, fg_color="transparent")
+        head.pack(fill="x", padx=14, pady=(14, 4))
+        ctk.CTkLabel(
+            head,
+            text=("이 지도는 검색에 남습니다" if kept else "이 지도는 걸러집니다"),
+            font=theme.FONT_TITLE,
+            text_color=(theme.PRIMARY if kept else theme.DANGER),
+        ).pack(anchor="w")
+        ctk.CTkLabel(
+            head, text=f"{_MODE_LABELS[mode]}  ·  {pattern}",
+            font=theme.FONT_CAPTION, text_color=theme.PRIMARY, anchor="w",
+        ).pack(anchor="w", pady=(2, 0))
+
+        body = ctk.CTkScrollableFrame(win, fg_color="transparent")
+        body.pack(fill="both", expand=True, padx=14, pady=(4, 4))
+        for fragment, hits in report:
+            row = ctk.CTkLabel(
+                body, text=f"{'●' if hits else '○'}  {fragment}",
+                font=theme.FONT_BODY_STRONG, anchor="w",
+                # A (light, dark) pair rather than theme.INK: this window
+                # does not pin its own background, so near-black text on it
+                # is only readable while the app is in light mode.
+                text_color=_TEXT if hits else theme.PRIMARY,
+            )
+            row.pack(fill="x", anchor="w", pady=(6, 0))
+            if not hits:
+                ctk.CTkLabel(
+                    body, text="        걸리지 않음", font=theme.FONT_CAPTION,
+                    text_color=theme.PRIMARY, anchor="w",
+                ).pack(fill="x", anchor="w")
+            for kind, line in hits:
+                # A hit on anything but a 속성/정보 line is the failure this
+                # window exists to show, so it is the one thing coloured.
+                suspect = kind not in (map_mods.MOD_LINE, map_mods.PROPERTY_LINE)
+                ctk.CTkLabel(
+                    body, text=f"        [{kind}] {line}",
+                    font=theme.FONT_CAPTION, anchor="w", justify="left",
+                    wraplength=540,
+                    text_color=theme.DANGER if suspect else _TEXT,
+                ).pack(fill="x", anchor="w")
+
+        ctk.CTkLabel(
+            win,
+            text="빨간 줄은 실제 옵션이 아니라 설명·구분 줄에 걸린 것입니다 — "
+                 "그 조각은 더 좁게 고쳐야 합니다.",
+            font=theme.FONT_CAPTION, text_color=theme.PRIMARY,
+            anchor="w", justify="left", wraplength=580,
+        ).pack(fill="x", padx=14, pady=(0, 10))
 
     # ---- preset lifecycle --------------------------------------------------
     def _refresh_preset_menu(self) -> None:
@@ -311,6 +467,7 @@ class RegexTab(ctk.CTkFrame):
             "name": f"정규식 {len(self._presets()) + 1}",
             "mode": EXCLUDE,
             "mods": [],
+            "thresholds": {},
             "extra": "",
             "pattern": "",
             "hotkey": "",
@@ -346,9 +503,13 @@ class RegexTab(ctk.CTkFrame):
             self.extra_var.set((preset or {}).get("extra", ""))
             self.hotkey_picker.set_combo((preset or {}).get("hotkey", ""))
             chosen = set((preset or {}).get("mods", []))
-            for mod, var, _widget in self._rows:
-                if mod is not None:
-                    var.set(mod.id in chosen)
+            saved_thresholds = (preset or {}).get("thresholds", {}) or {}
+            for mod, var, _widget, threshold in self._rows:
+                if mod is None:
+                    continue
+                var.set(mod.id in chosen)
+                if threshold is not None:
+                    threshold.set(str(saved_thresholds.get(mod.id, "")))
             # Fires the output trace, which is why this has to happen inside
             # the guard: the counter should follow the preset being shown,
             # but nothing may be written back to config while loading.
@@ -366,6 +527,7 @@ class RegexTab(ctk.CTkFrame):
         preset["name"] = self.name_var.get()
         preset["mode"] = _MODE_BY_LABEL.get(self.mode_var.get(), EXCLUDE)
         preset["mods"] = self._checked_ids()
+        preset["thresholds"] = self._thresholds()
         preset["extra"] = self.extra_var.get()
         preset["pattern"] = self.output_var.get()
         preset["hotkey"] = self.hotkey_picker.get_combo()

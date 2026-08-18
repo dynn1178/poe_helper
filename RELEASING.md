@@ -85,7 +85,9 @@ python release.py 1.1.0
 
 1. **사전 검사** — `git`/`gh` 존재, `build.spec`의 산출물 이름과
    `version.ASSET_NAME` 일치, 다운로드 페이지 링크가 현재 저장소를 가리키는지,
-   작업 트리가 깨끗한지, 태그가 비어 있는지, 올리려는 버전이 실제로 더 높은지
+   작업 트리가 깨끗한지, 태그가 비어 있는지, 올리려는 버전이 실제로 더 높은지,
+   그리고 **지도 정규식 조각이 실제 옵션 줄에만 걸리는지**
+   (`check_fragments.py` — 1.2.2가 이 문제로 잘못 나갔습니다)
 2. `poehelper/version.py`의 `__version__`을 새 버전으로 수정
 3. PyInstaller 빌드 → `dist/KuanPoeHelper.exe`
 4. **여기서 멈추고 직접 실행해 확인하도록 안내** (아래 체크리스트)

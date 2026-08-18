@@ -253,7 +253,7 @@ DEFAULTS: dict[str, Any] = {
                 # can't-be-bothered list.
                 "mods": ["reflect", "no_regen", "no_leech", "max_res"],
                 "extra": "",
-                "pattern": '"!반사|재생|흡수|최대치"',
+                "pattern": '"!반사|재생|흡수|저항 최대치"',
                 "hotkey": "",
             },
             {
@@ -262,7 +262,7 @@ DEFAULTS: dict[str, Any] = {
                 "mode": "include",
                 "mods": ["quantity", "pack_size"],
                 "extra": "",
-                "pattern": '"수량|규모"',
+                "pattern": r'"수량: \+|무리 규모"',
                 "hotkey": "",
             },
         ],
@@ -377,6 +377,25 @@ class Config:
         for key, old_defaults in superseded.items():
             if any(clicking.get(key) == list(old) for old in old_defaults):
                 clicking[key] = list(DEFAULTS["clicking"][key])
+
+        # Map-regex presets shipped in 1.2.2 with fragments that matched more
+        # than they named: 최대치 also hit "몬스터의 격분 충전 최대치", 수량 and
+        # 희귀도 hit the property lines every map prints, and the pair of them
+        # made both starter presets quietly wrong. A preset still carrying the
+        # exact string 1.2.2 wrote is not a choice anyone made -- it is the old
+        # default sitting where it was put -- so it moves up to the corrected
+        # one. Anything edited since differs, and is left alone.
+        #
+        # Same treatment, and the same reasoning, as the click-pacing defaults
+        # above.
+        superseded_patterns = {
+            '"!반사|재생|흡수|최대치"': '"!반사|재생|흡수|저항 최대치"',
+            '"수량|규모"': r'"수량: \+|무리 규모"',
+        }
+        for preset in self.data.get("map_regex", {}).get("presets", []):
+            replacement = superseded_patterns.get(preset.get("pattern", ""))
+            if replacement:
+                preset["pattern"] = replacement
 
         # Zone gating narrowed from "town or hideout" to hideouts only.
         zone_cfg = self.data["zone"]
