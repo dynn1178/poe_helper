@@ -162,6 +162,8 @@ class TradeAPI:
         self._limiter = _RateLimiter()
         self._stats_index: dict[str, list[dict]] | None = None
         self._bases: list[str] | None = None
+        self._names: dict[str, str] | None = None
+        self._types: dict[str, str] | None = None
         self._lock = threading.Lock()
 
     # ---- settings ---------------------------------------------------------
@@ -273,6 +275,55 @@ class TradeAPI:
                 logger.info("trade base types: %d", len(self._bases))
             return self._bases
 
+    def _name_index(self) -> tuple[dict[str, str], dict[str, str]]:
+        """Unique names and base types, keyed by their whitespace-flattened form.
+
+        The value is the site's *own* spelling, because that is what the
+        search endpoint demands -- see :meth:`resolve_name`.
+
+        A failed download is not cached: the item list is only needed to tidy
+        up spelling, and a price check that cannot reach it should fall back
+        to the printed text rather than refuse to search at all.
+        """
+        with self._lock:
+            if self._names is not None and self._types is not None:
+                return self._names, self._types
+            try:
+                groups = self.items()
+            except TradeError:
+                logger.debug("item list unavailable; using printed names", exc_info=True)
+                return {}, {}
+            names: dict[str, str] = {}
+            types: dict[str, str] = {}
+            for group in groups:
+                for entry in group.get("entries", []):
+                    for attribute, target in (("name", names), ("type", types)):
+                        value = entry.get(attribute)
+                        if value:
+                            target.setdefault(_flatten(value), value)
+            self._names, self._types = names, types
+            logger.info("trade item index: %d names, %d types", len(names), len(types))
+            return names, types
+
+    def resolve_name(self, printed: str) -> str:
+        """The site's exact spelling of a unique's name, or "".
+
+        The search endpoint matches ``name`` exactly and answers anything else
+        with HTTP 400 "Unknown item name" -- and the site's own data is not
+        always tidy. 들불 체관 is published as ``"들불 체관 "``, trailing space
+        and all, so the perfectly correct name read off the item was rejected
+        outright. Comparing with whitespace flattened and then sending back
+        whatever the site itself calls the item sidesteps every such typo,
+        present and future, without a hand-maintained fix-up table.
+        """
+        names, _types = self._name_index()
+        return names.get(_flatten(printed), "")
+
+    def resolve_type(self, printed: str) -> str:
+        """The site's exact spelling of a base type, or ""."""
+        _names, types = self._name_index()
+        return types.get(_flatten(printed), "")
+
     def resolve_base(self, printed: str) -> str:
         """The base type inside a magic item's decorated name.
 
@@ -321,12 +372,20 @@ class TradeAPI:
     def find_stat(self, text: str) -> list[dict]:
         """Look *text* (one mod, possibly multi-line) up in the index.
 
-        Three spellings are tried because the game and the site disagree on
-        the sign in a couple of predictable ways -- see normalise_stat.
+        Several spellings are tried because the game and the site disagree on
+        the sign in a few predictable ways -- see normalise_stat. The site
+        renders a signed stat with a leading "+" whichever way it rolled, so
+        "받는 화염 피해 -1" on the item has to be looked up as "+#": one stat
+        id covers both directions, and the sign lives in the filter value.
         """
         index = self.stat_index()
         key = normalise_stat(text)
-        for candidate in (key, key.replace("+#", "#"), key.replace("#", "+#", 1)):
+        for candidate in (
+            key,
+            key.replace("+#", "#"),
+            key.replace("#", "+#", 1),
+            key.replace("-#", "+#"),
+        ):
             found = index.get(candidate)
             if found:
                 return found
@@ -358,6 +417,11 @@ class TradeAPI:
 
 def _quote(value: str) -> str:
     return urllib.request.quote(value, safe="")
+
+
+def _flatten(text: str) -> str:
+    """A name reduced to what it *says*, so stray whitespace cannot hide it."""
+    return re.sub(r"\s+", " ", text or "").strip()
 
 
 # ---------------------------------------------------------------------------

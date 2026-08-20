@@ -95,6 +95,29 @@ def resolve(api, mod: ItemMod) -> tuple[str, int] | None:
     return entry["id"], entry["text"].count("#")
 
 
+def expand_mods(api, mods: list[ItemMod]) -> list[ItemMod]:
+    """Split multi-line modifiers the site indexes one line at a time.
+
+    Which way a two-line modifier goes is the site's call, not ours: the
+    crafted trigger mod is published as a single two-line stat, while a
+    tincture's implicit -- equally one ``{ 고정 속성 부여 }`` block -- is two
+    separate ids. So the combined text is looked up first and kept when it
+    exists; only when it does not, and the pieces do, is the mod taken apart.
+    A piece the site does not know is kept anyway, so the window still shows
+    the whole item; it simply contributes no filter.
+    """
+    expanded: list[ItemMod] = []
+    for mod in mods:
+        parts = mod.split()
+        if len(parts) > 1 and not api.find_stat(mod.text) and any(
+            api.find_stat(part.text) for part in parts
+        ):
+            expanded.extend(parts)
+        else:
+            expanded.append(mod)
+    return expanded
+
+
 def rolled_values(mod: ItemMod, placeholders: int) -> list[float]:
     return mod.values[:placeholders] if placeholders else []
 
@@ -163,9 +186,15 @@ def build(
     if item.rarity == "unique" and item.name:
         # A unique has both: the name says which one, the base pins the
         # variant (some uniques exist on several bases).
-        query["name"] = item.name
+        #
+        # Both go through the site's own spelling first. The endpoint matches
+        # these exactly and rejects a near miss with "Unknown item name", and
+        # the site's data contains stray whitespace here and there -- 들불 체관
+        # is published with a trailing space -- so the name read correctly off
+        # the item is not always the string the search will accept.
+        query["name"] = api.resolve_name(item.name) or item.name
         if item.base:
-            query["type"] = item.base
+            query["type"] = api.resolve_type(item.base) or item.base
     elif item.base:
         # Currency, cards and gems have no "name" on the trade site at all --
         # what the game prints as the item's name is its *type* there. Sending
@@ -175,7 +204,10 @@ def build(
         # 생명력 플라스크 - 누그러뜨림") and the site rejects the whole string
         # with "Unknown item base type", so the real base has to be dug back
         # out of it -- see TradeAPI.resolve_base.
-        resolved = api.resolve_base(item.base) if item.rarity == "magic" else ""
+        resolved = (
+            api.resolve_base(item.base) if item.rarity == "magic"
+            else api.resolve_type(item.base)
+        )
         query["type"] = resolved or item.base
 
     if not item.priced_by_name:

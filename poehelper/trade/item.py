@@ -116,6 +116,14 @@ _AFFIX_KINDS = (
 )
 
 _MOD_HEADER_RE = re.compile(r"^\{\s*(?P<body>.+?)\s*\}$")
+# Reminder text: the game's own gloss on a keyword, printed under the mod it
+# belongs to and wrapped in parentheses from end to end --
+#     ("점화"는 지속 화염 피해를 주며 …)
+# No stat the trade site publishes has a line of that shape (checked against
+# all 18,180 of them), so the rule can be this blunt. Leaving them in glued
+# the gloss onto the mod above and made the mod unfindable -- which is what a
+# tincture, whose every line carries one, ran into.
+_REMINDER_RE = re.compile(r"^\(.*\)$")
 _TIER_RE = re.compile(r"(?:등급|Tier):\s*(\d+)")
 # "29(26-30)" -> rolled 29 out of 26..30. Bare numbers have no known range.
 _ROLL_RE = re.compile(r"(?P<value>[-+]?\d+(?:\.\d+)?)\((?P<lo>[-+]?[\d.]+)-(?P<hi>[-+]?[\d.]+)\)")
@@ -161,6 +169,24 @@ class ItemMod:
             else:
                 scores.append(max(0.0, min(1.0, (value - low) / (high - low))))
         return sum(scores) / len(scores)
+
+    def split(self) -> list["ItemMod"]:
+        """This modifier as one :class:`ItemMod` per line.
+
+        One ``{ ... }`` header can cover several stats -- a tincture's implicit
+        is "점화 유발" *and* "점화의 피해 증가" under a single header -- and the
+        trade site indexes those as two separate ids. Splitting is not always
+        right, though: the crafted trigger mod is published as one two-line
+        stat. Only the site can say which, so this hands back the pieces and
+        :func:`query.expand_mods` decides.
+        """
+        lines = self.text.split("\n")
+        if len(lines) < 2:
+            return [self]
+        return [
+            ItemMod(text=line, kind=self.kind, affix=self.affix, tier=self.tier, **_rolls(line))
+            for line in lines
+        ]
 
 
 @dataclass
@@ -367,7 +393,11 @@ def _parse_block(lines: list[str], item: ParsedItem) -> None:
     elif not item.advanced and _looks_like_mods(lines):
         # Only trusted when the client is not marking mods up at all. With
         # headers available, an unheaded block is prose by definition.
-        item.mods.extend(ItemMod(text=line, **_rolls(line)) for line in lines)
+        item.mods.extend(
+            ItemMod(text=line, **_rolls(line))
+            for line in lines
+            if not _REMINDER_RE.match(line)
+        )
 
 
 # "34-62" or, for elemental damage, several of them: "5-10, 12-30".
@@ -454,7 +484,7 @@ def _parse_advanced(lines: list[str]) -> list[ItemMod]:
             flush()
             body = []
             kind, affix, tier = _classify(header.group("body"))
-        else:
+        elif not _REMINDER_RE.match(line):
             body.append(line)
     flush()
     return mods

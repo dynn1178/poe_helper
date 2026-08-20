@@ -371,6 +371,11 @@ class PriceCheckWindow(ctk.CTkToplevel):
         box = ctk.CTkScrollableFrame(self.card, fg_color=theme.OVERLAY_SURFACE)
         box.pack(fill="both", expand=True, padx=12, pady=(0, 8))
 
+        # One row per *searchable* stat rather than per { ... } block: a single
+        # header can cover two stats the site indexes separately, and shown as
+        # one row they were one unusable filter with the second line hidden.
+        self.item.mods = querymod.expand_mods(self.api, self.item.mods)
+
         # Best tier first, and the top three ticked. Tier is the game's own
         # verdict on how good a roll is -- T1 is the best band the mod has --
         # so it beats percentage-through-range for deciding which mods are
