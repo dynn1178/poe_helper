@@ -66,11 +66,44 @@ _SMALL_INTEGER = 6
 DEFAULT_MOD_COUNT = 2
 
 
+# The site marks a *local* stat -- one that changes the item's own damage or
+# defences rather than the character's -- by appending this to its wording.
+# The game never prints it, so both variants of a mod collapse onto the same
+# text and only the item can say which was meant. See _local_fits.
+_LOCAL = "(특정)"
+
+# Which of the two a local variant belongs to. Everything that is not about
+# the piece's own defences is about a weapon's own damage: that split covers
+# all 15 wordings the site publishes both ways.
+_DEFENCE_WORDS = ("방어도", "회피", "에너지 보호막", "Armour", "Evasion", "Energy Shield")
+
+
 def is_priced_by_name(item: ParsedItem) -> bool:
     return item.rarity in _BY_NAME
 
 
-def resolve(api, mod: ItemMod) -> tuple[str, int] | None:
+def _local_fits(item: ParsedItem | None, text: str) -> bool:
+    """Whether *item* is the kind of thing this local stat can sit on.
+
+    "공격 속도 12% 증가" is published twice: once local, meaning this weapon
+    swings faster, and once global. On a pair of gloves only the global one
+    is ever indexed, so searching the local id -- which is what came out of
+    the list first -- returned nothing at all while listings existed. The
+    same trap catches "번개 피해 1~52 추가" on a ring and "방어도 +#" on a
+    weapon.
+
+    The item's own properties settle it: a weapon prints damage and attack
+    speed, a piece of armour prints armour/evasion/energy shield, and a ring
+    prints neither.
+    """
+    if item is None:
+        return False
+    if any(word in text for word in _DEFENCE_WORDS):
+        return item.has_defence
+    return item.is_weapon
+
+
+def resolve(api, mod: ItemMod, item: ParsedItem | None = None) -> tuple[str, int] | None:
     """The stat id to search *mod* under, and how many numbers it takes.
 
     The second half matters more than it looks. A mod's text can contain
@@ -85,12 +118,14 @@ def resolve(api, mod: ItemMod) -> tuple[str, int] | None:
     if not candidates:
         return None
     wanted = _KIND_PREFIX.get(mod.kind, "explicit")
+    # Some mods exist only as one kind (a unique's "번개 피해만 줄 수 있음" is
+    # explicit-only), so an exact-kind miss falls back to the whole list
+    # rather than dropping the mod out of the search entirely.
+    same_kind = [e for e in candidates if e["id"].startswith(f"{wanted}.")] or candidates
+    want_local = _local_fits(item, same_kind[0]["text"])
     entry = next(
-        (e for e in candidates if e["id"].startswith(f"{wanted}.")),
-        # Some mods exist only as one kind (a unique's "번개 피해만 줄 수
-        # 있음" is explicit-only), so an exact-kind miss falls back rather
-        # than dropping the mod out of the search entirely.
-        candidates[0],
+        (e for e in same_kind if (_LOCAL in e["text"]) == want_local),
+        same_kind[0],
     )
     return entry["id"], entry["text"].count("#")
 
@@ -156,6 +191,29 @@ def bound_for(mod: ItemMod, placeholders: int) -> float | None:
     return round(bounded, 1) if bounded < 10 else float(int(bounded))
 
 
+def _type_for(api, item: ParsedItem) -> str:
+    """The base type as the site itself spells it.
+
+    Two things stop the printed line from being usable as it stands, and both
+    are answered by asking which published base is *inside* it:
+
+    * a magic item prints its affixes into the same line ("전문의의 신성한
+      생명력 플라스크 - 누그러뜨림");
+    * a synthesised item prints 결합된 in front of the base ("결합된 토파즈
+      반지"). The site publishes the plain base and rejects the decorated one
+      with "Unknown item base type", so a synthesised item -- unique or not
+      -- never found anything at all.
+
+    Exact spelling is still tried first: containment is a fallback, not the
+    rule, and 사슬 장갑 is inside more base names than it should decide.
+    """
+    if not item.base:
+        return ""
+    if item.rarity == "magic":
+        return api.resolve_base(item.base) or item.base
+    return api.resolve_type(item.base) or api.resolve_base(item.base) or item.base
+
+
 def build(
     api,
     item: ParsedItem,
@@ -194,7 +252,7 @@ def build(
         # the item is not always the string the search will accept.
         query["name"] = api.resolve_name(item.name) or item.name
         if item.base:
-            query["type"] = api.resolve_type(item.base) or item.base
+            query["type"] = _type_for(api, item)
     elif item.base:
         # Currency, cards and gems have no "name" on the trade site at all --
         # what the game prints as the item's name is its *type* there. Sending
@@ -204,11 +262,7 @@ def build(
         # 생명력 플라스크 - 누그러뜨림") and the site rejects the whole string
         # with "Unknown item base type", so the real base has to be dug back
         # out of it -- see TradeAPI.resolve_base.
-        resolved = (
-            api.resolve_base(item.base) if item.rarity == "magic"
-            else api.resolve_type(item.base)
-        )
-        query["type"] = resolved or item.base
+        query["type"] = _type_for(api, item)
 
     if not item.priced_by_name:
         # A rare's own rarity has to be pinned, or the search happily matches
@@ -220,7 +274,7 @@ def build(
     # Mods apply to uniques as well now: two copies of the same unique are not
     # the same item when one rolled 150% and the other 200%.
     for selection in selected:
-        resolved = resolve(api, selection.mod)
+        resolved = resolve(api, selection.mod, item)
         if resolved is None:
             continue
         stat_id, _placeholders = resolved

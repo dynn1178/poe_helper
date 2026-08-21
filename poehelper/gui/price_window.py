@@ -404,7 +404,7 @@ class PriceCheckWindow(ctk.CTkToplevel):
             self._build_mod_row(box, mod, id(mod) in default_on)
 
     def _build_mod_row(self, parent, mod: ItemMod, checked: bool) -> None:
-        resolved = querymod.resolve(self.api, mod)
+        resolved = querymod.resolve(self.api, mod, self.item)
         placeholders = resolved[1] if resolved else 0
         row_data = _ModRow(mod, checked, querymod.current_value(mod, placeholders))
         self._rows.append(row_data)

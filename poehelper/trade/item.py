@@ -87,12 +87,24 @@ _LABELS = {
     "chaos": ("카오스 피해", "Chaos Damage"),
     "aps": ("초당 공격 횟수", "Attacks per Second"),
     "area_level": ("지역 레벨", "Area Level"),
+    # Not used as a number anywhere -- only as the answer to "is this a piece
+    # of armour?", which is what tells a local 방어도/회피 mod apart from the
+    # global one of the same wording. See query._local_fits.
+    "defence": (
+        "방어도", "회피", "에너지 보호막",
+        "Armour", "Evasion Rating", "Energy Shield",
+    ),
 }
 
 _FLAGS = {
     "corrupted": ("타락", "Corrupted"),
     "fractured_item": ("분열된 아이템", "Fractured Item"),
-    "synthesised": ("합성된 아이템", "Synthesised Item"),
+    # The Korean client calls a synthesised item 결합된, and prints that
+    # same word into its base type as well ("결합된 토파즈 반지") -- which
+    # is what query._type_for has to undo before the site will accept it.
+    # The key is the site's own misc_filters id, so the window can tick
+    # the filter this flag stands for; "synthesised" matched nothing.
+    "synthesised_item": ("결합된 아이템", "합성된 아이템", "Synthesised Item"),
     "mirrored": ("거울 복제됨", "Mirrored"),
     "unidentified": ("미확인", "Unidentified"),
     # Names taken from the trade site's own filter labels rather than
@@ -202,6 +214,7 @@ class ParsedItem:
     elemental_dps: float = 0.0
     chaos_dps: float = 0.0
     area_level: int | None = None
+    has_defence: bool = False   # armour/evasion/ES printed in the properties
     sockets: str = ""
     mods: list[ItemMod] = field(default_factory=list)
     flags: set[str] = field(default_factory=set)
@@ -366,7 +379,10 @@ def _parse_block(lines: list[str], item: ParsedItem) -> None:
     _parse_weapon(lines, item)
 
     quality = gem_level = area_level = None
+    defence = False
     for line in lines:
+        if _strip_label(line, _LABELS["defence"]) is not None:
+            defence = True
         found = _strip_label(line, _LABELS["quality"])
         if found is not None:
             quality = _first_int(found)
@@ -379,7 +395,9 @@ def _parse_block(lines: list[str], item: ParsedItem) -> None:
             found = _strip_label(line, _LABELS["gem_level"])
             if found is not None:
                 gem_level = _first_int(found)
-    if quality is not None or gem_level is not None or area_level is not None:
+    if defence:
+        item.has_defence = True
+    if quality is not None or gem_level is not None or area_level is not None or defence:
         item.quality = quality if quality is not None else item.quality
         item.gem_level = gem_level if gem_level is not None else item.gem_level
         item.area_level = area_level if area_level is not None else item.area_level
