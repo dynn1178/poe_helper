@@ -104,6 +104,47 @@ def check_repo_clean() -> None:
     ok("작업 트리 깨끗함")
 
 
+# Folders that live next to this project for reference and must never be
+# committed or shipped. "Awakened PoE Trade" is an installed Electron app --
+# a 200 MB exe among 140-odd other files -- kept unpacked here while the price
+# check was written against its data. It has been in a commit once already:
+# the push was rejected by GitHub ("this exceeds GitHub's file size limit of
+# 100.00 MB") after the release had built and tagged, which is the worst
+# moment to find out. The ignore rule is the fix; this is the alarm for the
+# day someone edits .gitignore.
+REFERENCE_FOLDERS = ("Awakened PoE Trade",)
+
+
+def check_reference_folders() -> None:
+    """Refuse to release while a reference folder is tracked or bundled.
+
+    Two separate ways it could get in, so both are checked: ``git add -A`` in
+    publish() would commit it if it were not ignored, and build.spec would
+    ship it if it were ever named in ``datas``.
+    """
+    for folder in REFERENCE_FOLDERS:
+        path = ROOT / folder
+        tracked = run("git", "ls-files", "--", folder, capture=True)
+        if tracked:
+            raise Failed(
+                f"'{folder}' 폴더가 git 에 추적되고 있습니다. 200MB 짜리 파일이 들어 있어 "
+                "GitHub 이 푸시를 거부합니다.\n"
+                ".gitignore 에 다음 줄이 있는지 확인하고, 이미 추가된 파일은 빼세요:\n"
+                f"  {folder}/\n"
+                f'  git rm -r --cached "{folder}"'
+            )
+        if path.exists() and not run(
+            "git", "check-ignore", "--", folder, capture=True, check=False
+        ):
+            raise Failed(
+                f"'{folder}' 폴더가 .gitignore 에 없습니다. 다음 줄을 추가하세요:\n"
+                f"  {folder}/"
+            )
+        if folder in (ROOT / "build.spec").read_text(encoding="utf-8"):
+            raise Failed(f"build.spec 이 '{folder}' 을(를) exe 에 포함하려 합니다.")
+    ok("참조용 폴더는 커밋·빌드에서 제외됨")
+
+
 def check_tag_free(tag: str) -> None:
     tags = run("git", "tag", "--list", tag, capture=True)
     if tags:
@@ -435,6 +476,7 @@ def main() -> int:
         step("사전 검사")
         check_tools()
         check_build_python()
+        check_reference_folders()
         check_asset_name()
         check_page_links()
         check_map_fragments()

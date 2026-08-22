@@ -26,6 +26,10 @@ from .tooltip import Tooltip
 # The ENTER 필요 column. One constant so the heading and the tick under it
 # cannot drift apart.
 _CHAT_COL_WIDTH = 72
+# What one row is tall -- the height CTkEntry and the hotkey picker take. Only
+# the checkbox's holder needs telling, but it has to agree with them or it
+# sets the height of the whole row.
+_ROW_HEIGHT = 28
 
 
 class MacroTableEditor(ctk.CTkFrame):
@@ -100,11 +104,19 @@ class MacroTableEditor(ctk.CTkFrame):
         ctk.CTkEntry(
             row, textvariable=text_var, placeholder_text="채팅 문구"
         ).pack(side="left", padx=(0, 4), fill="x", expand=True)
-        # In a fixed-width holder so the tick sits centred under its heading.
+        # In a fixed-size holder so the tick sits centred under its heading.
         # A bare checkbox with an empty label still reserves room for the
         # label, which left a wide dead strip to its right and pushed the
         # hotkey picker out of line with the heading above it.
-        chat_cell = ctk.CTkFrame(row, fg_color="transparent", width=_CHAT_COL_WIDTH)
+        #
+        # The height is as deliberate as the width. A CTkFrame asks for 200px
+        # when it is not told otherwise, and pack_propagate(False) -- needed
+        # so the checkbox cannot shrink the cell back to its own width --
+        # makes it *keep* that 200. Every row became a 200px band with one
+        # checkbox floating in the middle of it.
+        chat_cell = ctk.CTkFrame(
+            row, fg_color="transparent", width=_CHAT_COL_WIDTH, height=_ROW_HEIGHT
+        )
         chat_cell.pack(side="left", padx=(0, 4))
         chat_cell.pack_propagate(False)
         chat_box = ctk.CTkCheckBox(
