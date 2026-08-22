@@ -117,6 +117,14 @@ class MacroTableEditor(ctk.CTkFrame):
     def _add_row(self, hotkey: str, text: str, chat: bool = True) -> None:
         row = ctk.CTkFrame(self.scroll, fg_color="transparent")
         row.pack(fill="x", pady=3)
+        # Re-align on the *row's* resize, not only the header's. The two are
+        # not the same event and only this one matters: the header is the
+        # full width of the tab from the start, while the rows sit inside a
+        # scrollable frame and reach their final width later -- once its
+        # canvas and scrollbar have been sized. Aligning only at build time
+        # measured the rows mid-layout and left every heading ~100px left of
+        # the column it names.
+        row.bind("<Configure>", lambda _e: self._align_headers())
 
         text_var = ctk.StringVar(value=text)
         chat_var = ctk.BooleanVar(value=chat)
@@ -212,8 +220,11 @@ class MacroTableEditor(ctk.CTkFrame):
                 width = widget.winfo_width()
                 if width <= 1:
                     return  # not laid out yet; the next <Configure> will do it
+                x = widget.winfo_rootx() - origin
+                if (label.winfo_x(), label.winfo_width()) == (x, width):
+                    continue  # already there -- placing again would loop
                 label.configure(width=width)
-                label.place(x=widget.winfo_rootx() - origin, y=0)
+                label.place(x=x, y=0)
         except tk.TclError:
             pass  # widget destroyed mid-layout
 

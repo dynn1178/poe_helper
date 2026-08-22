@@ -70,6 +70,12 @@ FONT_BODY = (FONT_FAMILY, 12)
 FONT_CAPTION = (FONT_FAMILY, 11)
 FONT_SMALL = (FONT_FAMILY, 10)
 FONT_MONO = ("Consolas", 10)
+# The generated map-search string. Consolas was the obvious choice for
+# something regex-shaped and the wrong one here: the fragments are Korean,
+# Consolas has no Hangul, and Windows substituted a different face for every
+# other character. One family that covers both, a size up because this is the
+# line the whole tab exists to produce.
+FONT_PATTERN = (FONT_FAMILY, 12)
 
 
 def apply_tk_fonts(root) -> None:

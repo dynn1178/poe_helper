@@ -35,6 +35,34 @@ from . import theme
 from .widgets.hotkey_picker import HotkeyPicker
 from .widgets.tooltip import Tooltip
 
+_check_window = None
+
+
+def open_map_check(master, pattern: str, item_text: str):
+    """Show one map against *pattern*, reusing the window if one is up.
+
+    Module-level so the 맵모드 tab's button and the global hotkey both reach
+    the same window. One at a time, for the same reason the price check keeps
+    one: this is opened repeatedly while sorting a stash tab, and a trail of
+    windows would bury the game.
+    """
+    global _check_window
+    from .map_check_window import MapCheckWindow
+
+    if _check_window is not None:
+        try:
+            _check_window.close()
+        except Exception:  # noqa: BLE001 - already gone is fine
+            pass
+        _check_window = None
+
+    def forget() -> None:
+        global _check_window
+        _check_window = None
+
+    _check_window = MapCheckWindow(master, pattern, item_text, on_closed=forget)
+    return _check_window
+
 _MODE_LABELS = {INCLUDE: "포함(하나)", INCLUDE_ALL: "포함(모두)", EXCLUDE: "제외"}
 _MODE_BY_LABEL = {label: mode for mode, label in _MODE_LABELS.items()}
 _ALL_CATEGORIES = "전체 분류"
@@ -191,7 +219,7 @@ class RegexTab(ctk.CTkFrame):
         self.category_var = ctk.StringVar(value=_ALL_CATEGORIES)
         ctk.CTkOptionMenu(
             filter_row, variable=self.category_var,
-            values=[_ALL_CATEGORIES, *map_mods.CATEGORIES], width=130,
+            values=[_ALL_CATEGORIES, *map_mods.categories()], width=130,
             command=lambda _v: self._apply_filter(),
         ).pack(side="left")
         ctk.CTkButton(
@@ -310,7 +338,7 @@ class RegexTab(ctk.CTkFrame):
         out_row.pack(fill="x", padx=8, pady=(4, 2))
         self.output_var = ctk.StringVar()
         ctk.CTkEntry(
-            out_row, textvariable=self.output_var, font=theme.FONT_MONO,
+            out_row, textvariable=self.output_var, font=theme.FONT_PATTERN, height=32,
         ).pack(side="left", fill="x", expand=True)
         ctk.CTkButton(out_row, text="복사", width=54, command=self._copy).pack(
             side="left", padx=(6, 0)
@@ -416,70 +444,8 @@ class RegexTab(ctk.CTkFrame):
                 "게임에서 지도에 마우스를 올리고 Ctrl+C 를 누른 뒤 다시 눌러주세요."
             )
             return
-        matched, report = map_mods.describe_matches(pattern, text)
-        self._show_check_result(pattern, matched, report)
+        open_map_check(self, pattern, text)
 
-    def _show_check_result(self, pattern: str, matched: bool, report) -> None:
-        mode, _fragments = map_mods.split_pattern(pattern)
-        kept = matched if mode == INCLUDE else not matched
-
-        win = ctk.CTkToplevel(self)
-        win.title("정규식 검사")
-        win.geometry("620x460")
-        win.transient(self.winfo_toplevel())
-        win.attributes("-topmost", True)
-        win.bind("<Escape>", lambda _e: win.destroy())
-
-        head = ctk.CTkFrame(win, fg_color="transparent")
-        head.pack(fill="x", padx=14, pady=(14, 4))
-        ctk.CTkLabel(
-            head,
-            text=("이 지도는 검색에 남습니다" if kept else "이 지도는 걸러집니다"),
-            font=theme.FONT_TITLE,
-            text_color=(theme.PRIMARY if kept else theme.DANGER),
-        ).pack(anchor="w")
-        ctk.CTkLabel(
-            head, text=f"{_MODE_LABELS[mode]}  ·  {pattern}",
-            font=theme.FONT_CAPTION, text_color=theme.PRIMARY, anchor="w",
-        ).pack(anchor="w", pady=(2, 0))
-
-        body = ctk.CTkScrollableFrame(win, fg_color="transparent")
-        body.pack(fill="both", expand=True, padx=14, pady=(4, 4))
-        for fragment, hits in report:
-            row = ctk.CTkLabel(
-                body, text=f"{'●' if hits else '○'}  {fragment}",
-                font=theme.FONT_BODY_STRONG, anchor="w",
-                # A (light, dark) pair rather than theme.INK: this window
-                # does not pin its own background, so near-black text on it
-                # is only readable while the app is in light mode.
-                text_color=_TEXT if hits else theme.PRIMARY,
-            )
-            row.pack(fill="x", anchor="w", pady=(6, 0))
-            if not hits:
-                ctk.CTkLabel(
-                    body, text="        걸리지 않음", font=theme.FONT_CAPTION,
-                    text_color=theme.PRIMARY, anchor="w",
-                ).pack(fill="x", anchor="w")
-            for kind, line in hits:
-                # A hit on anything but a 속성/정보 line is the failure this
-                # window exists to show, so it is the one thing coloured.
-                suspect = kind not in (map_mods.MOD_LINE, map_mods.PROPERTY_LINE)
-                ctk.CTkLabel(
-                    body, text=f"        [{kind}] {line}",
-                    font=theme.FONT_CAPTION, anchor="w", justify="left",
-                    wraplength=540,
-                    text_color=theme.DANGER if suspect else _TEXT,
-                ).pack(fill="x", anchor="w")
-
-        ctk.CTkLabel(
-            win,
-            text="빨간 줄은 실제 옵션이 아니라 설명·구분 줄에 걸린 것입니다 — "
-                 "그 조각은 더 좁게 고쳐야 합니다.",
-            font=theme.FONT_CAPTION, text_color=theme.PRIMARY,
-            anchor="w", justify="left", wraplength=580,
-        ).pack(fill="x", padx=14, pady=(0, 10))
-
-    # ---- preset lifecycle --------------------------------------------------
     def _refresh_preset_menu(self) -> None:
         names = [p.get("name", "") or "(이름 없음)" for p in self._presets()]
         self.preset_menu.configure(values=names or [""])

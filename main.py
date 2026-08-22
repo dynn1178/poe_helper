@@ -115,6 +115,7 @@ def main() -> None:
     hotkey_manager.set_handler("inventory_pull_filtered", actions.inventory_pull_filtered)
     hotkey_manager.set_handler("stash_dump_all", actions.stash_dump_all)
     hotkey_manager.set_handler("price_check", actions.price_check)
+    hotkey_manager.set_handler("map_regex_check", actions.map_regex_check)
     # restart_app is deliberately not bound to a key any more -- it is a
     # button in the bottom bar (see gui/app.py _build_bottom_bar).
 

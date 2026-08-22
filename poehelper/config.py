@@ -81,6 +81,9 @@ DEFAULT_HOTKEYS = {
     # Not ctrl+d, which this app already uses for the identify scroll -- the
     # collision would price-check every time a scroll was used.
     "price_check": "alt+d",
+    # Next to the price check, and for the same kind of moment: the item is
+    # under the cursor and the question is whether to keep it.
+    "map_regex_check": "alt+q",
 }
 
 # Grid dimensions of each clickable game area, in cells. The pickers draw
@@ -334,6 +337,42 @@ class Config:
         self._listeners: list[Callable[[], None]] = []
         self.load()
 
+    def _migrate_map_mod_ids(self) -> None:
+        """Saved presets, moved from the grouped map options to the real ones.
+
+        The 맵모드 tab used to offer about sixty hand-grouped options and now
+        offers one per modifier the game can actually roll, so the ids a
+        preset stores no longer all exist. Dropping the unknown ones would
+        turn "위험 옵션 제외" into a filter that quietly stops excluding
+        anything, so each old id is replaced by the individual options its
+        fragment used to catch -- the same maps, now separately tickable.
+
+        Skipped entirely when the game data is unavailable, because then the
+        tab is still showing the old grouped list and the old ids are correct.
+        """
+        presets = self.data.get("map_regex", {}).get("presets", [])
+        if not presets:
+            return
+        try:
+            from . import map_mods
+
+            known = {mod.id for mod in map_mods.all_mods()}
+            legacy = map_mods.legacy_ids()
+        except Exception:  # noqa: BLE001 - a config load must not fail on this
+            return
+        if not legacy:
+            return
+        for preset in presets:
+            saved = preset.get("mods")
+            if not isinstance(saved, list) or all(i in known for i in saved):
+                continue
+            expanded: list[str] = []
+            for old in saved:
+                for new in [old] if old in known else legacy.get(old, []):
+                    if new not in expanded:
+                        expanded.append(new)
+            preset["mods"] = expanded
+
     def _migrate_paths_to_links(self) -> None:
         """The five 프로그램 경로 slots, folded into the shortcut list.
 
@@ -447,6 +486,7 @@ class Config:
             replacement = superseded_patterns.get(preset.get("pattern", ""))
             if replacement:
                 preset["pattern"] = replacement
+        self._migrate_map_mod_ids()
 
         # Zone gating narrowed from "town or hideout" to hideouts only.
         zone_cfg = self.data["zone"]

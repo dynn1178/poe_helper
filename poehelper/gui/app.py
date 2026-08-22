@@ -138,6 +138,14 @@ _GAME_HOTKEY_DESCRIPTIONS: list[tuple[str, str, str]] = [
         "게임 UI 설정에서 '고급 속성 설명'을 켜두면 각 속성이 얼마나 잘 떴는지(%)까지 표시됩니다.",
     ),
     (
+        "map_regex_check",
+        "지도 검사 (맵모드 정규식)",
+        "마우스를 올려둔 지도를 게임에서 복사(Ctrl+C)해, 맵모드 탭에서 고른 정규식이 "
+        "그 지도의 어느 줄에 걸리는지 보여줍니다. 지도 내용을 그대로 펼쳐놓고 걸린 줄만 "
+        "색으로 표시하므로, 걸러지는 이유가 실제 옵션인지 설명문에 잘못 걸린 것인지 "
+        "바로 알 수 있습니다.",
+    ),
+    (
         "show_image_1",
         "참고 이미지 1 표시 (홀드)",
         "키를 누르고 있는 동안 화면 중앙에 참고 이미지 1(ctrl1.png)을 표시합니다.",
@@ -1831,6 +1839,27 @@ class App(ctk.CTk):
 
         threading.Thread(target=work, name="gamedata-preload", daemon=True).start()
         self._ensure_game_data()
+
+    def open_map_check(self, clipboard_text: str) -> None:
+        """Show the copied map against the 맵모드 preset that is selected.
+
+        The pattern comes from the saved preset rather than from the tab's
+        widgets, so the hotkey works whether or not that tab has ever been
+        opened -- it is pressed in game, where no tab is open at all.
+        """
+        from .regex_tab import open_map_check
+
+        store = self.config.data.get("map_regex", {})
+        presets = store.get("presets", [])
+        active = store.get("active_id", "")
+        preset = next(
+            (p for p in presets if p.get("id") == active), presets[0] if presets else None
+        )
+        pattern = (preset or {}).get("pattern", "").strip()
+        if not pattern:
+            toast.show("맵모드 탭에서 정규식을 먼저 만들어주세요.")
+            return
+        open_map_check(self, pattern, clipboard_text)
 
     def _ensure_game_data(self) -> None:
         """Keep the bundled modifier and base-type data current.

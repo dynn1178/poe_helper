@@ -110,9 +110,20 @@ CONTENT = "콘텐츠"
 
 CATEGORIES = [DANGER, MONSTER, CURSE, REWARD, CONTENT]
 
-MAP_MODS: list[MapMod] = [
+_CURATED_MODS: list[MapMod] = [
     # ---- 위험: the mods that kill builds rather than slow them down --------
-    MapMod("reflect", DANGER, "피해 반사 (물리 / 원소 / 사술)", "반사"),
+    # Three separate mods, not one. They were behind a single 반사 tick, which
+    # is wrong twice over: the player-facing reflect and the two Thorns mods
+    # are avoided by completely different builds -- a physical attacker cares
+    # about the first and the third, a spellcaster about neither -- and one
+    # tick meant throwing away maps carrying any of them.
+    #
+    # The old label also said 사술, which no map mod does: the only 사술 mod
+    # is 몬스터가 사술 방지 보유 (Hexproof), a different thing entirely. All
+    # three wordings below are the game's own; see tools/check_map_mods.py.
+    MapMod("reflect", DANGER, "물리 피해 반사 (공격자에게)", "공격자에게 반사"),
+    MapMod("thorns_ele", DANGER, "희귀 몬스터 원소 가시", "원소 가시"),
+    MapMod("thorns_phys", DANGER, "희귀 몬스터 물리 가시", "물리 가시"),
     MapMod("penetration", DANGER, "몬스터 피해가 원소 저항 관통", "관통"),
     MapMod("no_regen", DANGER, "생명력·마나·에너지 보호막 재생 불가", "재생"),
     MapMod("no_leech", DANGER, "몬스터 생명력·마나 흡수 불가", "흡수"),
@@ -237,9 +248,288 @@ MAP_MODS: list[MapMod] = [
     MapMod("beast", CONTENT, "야수", "야수"),
 ]
 
-BY_ID = {mod.id: mod for mod in MAP_MODS}
-
 INCLUDE, INCLUDE_ALL, EXCLUDE = "include", "include_all", "exclude"
+
+UNSORTED = "기타"
+
+
+# ---------------------------------------------------------------------------
+# The option list, built from the game's own map modifiers
+# ---------------------------------------------------------------------------
+# One option per modifier a map can actually roll, rather than the handful of
+# grouped fragments this used to offer. Grouping was convenient to write and
+# wrong to use: a single 반사 tick threw away maps carrying *any* of three
+# unrelated mods, and a physical attacker and a spellcaster do not avoid the
+# same ones. The game's list is the honest one, and it is 207 entries long --
+# which the tab's search box handles far better than a taxonomy would.
+#
+# Three things have to be produced for each, and only the first is free:
+#
+# *The label* is the wording the client prints, taken as-is. Nothing to
+# decide, and it is what the player will read on the map.
+#
+# *The fragment* is the shortest run of words from that wording which no
+# other map modifier contains. Shortest because the game's search box holds
+# 50 characters; unique because a fragment that also matches a neighbour is
+# how a filter quietly throws away maps it was never asked about. In Korean
+# this comes out at a median of three characters, so a dozen still fit.
+#
+# *The category* is inherited from whichever curated fragment above used to
+# match it -- a mapping that was checked by hand once and can be re-derived
+# rather than re-guessed. Anything no curated fragment covered stays in 기타
+# instead of being sorted by keyword, because guessing from the text puts
+# "이 지역에서 발견하는 아이템 수량 증가" under 콘텐츠 and the player looking
+# for it under 보상 never finds it.
+_MIN_FRAGMENT = 2
+
+
+def _slug(ref: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "_", ref.lower()).strip("_")[:56] or "mod"
+
+
+def _word_runs(text: str) -> list[str]:
+    """Every run of consecutive words, shortest first, later ones preferred.
+
+    Later because the end of a mod line is the part that states the effect
+    ("... 25% 증가"), while the opening is a subject many mods share.
+
+    Runs never cross the rolled value. On the item that value is a number
+    this has no way to predict, so a fragment spanning it could not match --
+    and one *ending* at it comes out as the useless "몬스터 %". Splitting the
+    line at the placeholder leaves only the runs that are literal text on
+    every copy of the mod.
+    """
+    runs: set[str] = set()
+    for segment in re.split(r"\S*#\S*", text):
+        words = [w for w in segment.split() if w]
+        runs.update(
+            " ".join(words[start:start + length])
+            for length in range(1, len(words) + 1)
+            for start in range(len(words) - length + 1)
+        )
+    return sorted(runs, key=lambda run: (len(run), -text.find(run)))
+
+
+def _fragment_for(
+    wording: str, index: int, others: list[tuple[int, str]], avoid: list[str]
+) -> str:
+    """The shortest run of *wording* that matches this modifier and nothing else.
+
+    "Nothing else" is two separate requirements and the second is the one
+    that bites. A run must not appear in another modifier -- obvious -- and
+    it must not appear in the parts of a map that are *not* modifiers: the
+    ``{ 접두어 속성 부여 … — 물리, 카오스 }`` headers, whose trailing words are
+    damage-type tags, and the parenthesised reminder paragraphs that explain
+    a curse. Both are full of the same words the mods use, so the shortest
+    unique-among-mods run is regularly a word out of a rules explanation.
+    See _avoid_corpus.
+    """
+    for run in _word_runs(wording):
+        if len(run) < _MIN_FRAGMENT:
+            continue
+        if any(run in other for j, other in others if j != index):
+            continue
+        if any(run in line for line in avoid):
+            continue
+        return run
+    # No unique run exists: this modifier's whole wording is contained in a
+    # longer one ("효과 범위 #% 증가" inside "몬스터의 효과 범위 #% 증가"), so
+    # nothing short of the whole line distinguishes it -- and even that will
+    # also match the longer mod, which coverage() reports honestly.
+    #
+    # The wording has to become a *pattern* on the way out. It carries the
+    # game's "#" where the rolled number goes, and the item has a digit
+    # there; left as-is the fragment matched nothing at all.
+    return "".join(
+        r"\d+" if part == "#" else re.escape(part)
+        for part in re.split(r"(#)", wording)
+    )
+
+
+def _avoid_corpus() -> list[str]:
+    """Lines a fragment must never match, read off real copied maps.
+
+    ``data/map_samples/`` holds maps someone actually pasted in, and the
+    lines in them that are not modifiers are the trap this exists for: an
+    affix header carries the mod's damage-type tags, and a reminder
+    paragraph restates the mechanic in the same words the mod uses. A
+    fragment landing on either matches maps that do not have the mod at all.
+
+    Best-effort. With no samples on disk the fragments are merely unique
+    among modifiers, which is where this started; ``check_fragments.py``
+    reports whatever slips through.
+    """
+    from . import paths
+
+    lines: list[str] = []
+    directory = paths.data_path("map_samples")
+    try:
+        files = sorted(directory.glob("*.txt")) if directory.is_dir() else []
+    except OSError:
+        return lines
+    for path in files:
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        lines += [
+            line.strip()
+            for line in text.splitlines()
+            if line.strip() and classify_line(line) != MOD_LINE
+        ]
+    return lines
+
+
+def _generate(data) -> list[MapMod]:
+    entries: list[tuple[str, list[str]]] = []
+    for ref, wordings in data.area_mods():
+        # Split on newlines as well as between wordings. A two-line mod is
+        # two lines on the item too, and a fragment spanning the join ("…
+        # 않음 몬스터의 …") is text that appears nowhere.
+        cleaned = [
+            re.sub(r"[ \t]+", " ", line).strip()
+            for wording in wordings
+            for line in wording.split("\n")
+        ]
+        cleaned = [w for w in cleaned if w]
+        if cleaned:
+            entries.append((ref, cleaned))
+    if not entries:
+        return []
+
+    # Every wording in the game, so a fragment can be tested for uniqueness
+    # against all of them and not merely against the first of each mod.
+    pool = [(i, w) for i, (_ref, ws) in enumerate(entries) for w in ws]
+    avoid = _avoid_corpus()
+    category = _inherited_categories(entries)
+
+    out: list[MapMod] = []
+    # Seeded with the property-line ids so a generated slug can never collide
+    # with one of them -- all_mods() puts both in the same list, and BY_ID
+    # would silently drop whichever came second.
+    used: set[str] = {m.id for m in _CURATED_MODS if m.numeric}
+    for index, (ref, wordings) in enumerate(entries):
+        slug = _slug(ref)
+        while slug in used:
+            slug += "_2"
+        used.add(slug)
+        out.append(
+            MapMod(
+                id=slug,
+                category=category.get(ref, UNSORTED),
+                label=wordings[0],
+                pattern=_fragment_for(wordings[0], index, pool, avoid),
+            )
+        )
+    out.sort(key=lambda m: (CATEGORIES.index(m.category) if m.category in CATEGORIES else 99, m.label))
+    return out
+
+
+def _inherited_categories(entries: list[tuple[str, list[str]]]) -> dict[str, str]:
+    """Category per modifier, taken from the curated fragment that matched it."""
+    found: dict[str, str] = {}
+    for curated in _CURATED_MODS:
+        if curated.numeric:
+            continue
+        try:
+            pattern = re.compile(curated.pattern)
+        except re.error:
+            continue
+        for ref, wordings in entries:
+            if ref not in found and any(pattern.search(w) for w in wordings):
+                found[ref] = curated.category
+    return found
+
+
+_mods_cache: list[MapMod] | None = None
+
+
+def all_mods() -> list[MapMod]:
+    """Every option the tab offers: the map's property lines, then its mods.
+
+    Falls back to the curated list when the game data is unavailable -- an
+    offer of fifteen grouped options is a great deal better than an empty
+    tab, and the data is only missing on a build that lost its data folder.
+    """
+    global _mods_cache
+    if _mods_cache is not None:
+        return _mods_cache
+    try:
+        from .trade import gamedata
+
+        data = gamedata.load()
+    except Exception:  # noqa: BLE001 - the tab must open with or without it
+        logger.debug("map mod data unavailable", exc_info=True)
+        data = None
+    generated = _generate(data) if data is not None else []
+    if not generated:
+        logger.warning("게임 데이터가 없어 기존 지도 옵션 목록을 사용합니다")
+        _mods_cache = list(_CURATED_MODS)
+        return _mods_cache
+    # The property lines first: they are the numeric ones, they are on every
+    # map, and they are what a "good map" filter is mostly made of.
+    _mods_cache = [m for m in _CURATED_MODS if m.numeric] + generated
+    return _mods_cache
+
+
+def categories() -> list[str]:
+    """The categories actually present, in the order the list uses."""
+    present = {mod.category for mod in all_mods()}
+    return [c for c in CATEGORIES if c in present] + (
+        [UNSORTED] if UNSORTED in present else []
+    )
+
+
+_legacy_cache: dict[str, list[str]] | None = None
+
+
+def legacy_ids() -> dict[str, list[str]]:
+    """Old grouped option ids mapped onto the individual ones that replaced them.
+
+    A saved preset stores option ids, and the grouped list they were saved
+    against is gone. Rather than silently dropping them -- which would turn
+    someone's "위험 옵션 제외" filter into a shorter one that quietly lets the
+    dangerous maps through -- each old id resolves to every modifier its
+    fragment used to catch. That is the same set of maps it filtered before,
+    now as separate ticks the user can thin out.
+    """
+    global _legacy_cache
+    if _legacy_cache is not None:
+        return _legacy_cache
+    generated = [m for m in all_mods() if not m.numeric]
+    found: dict[str, list[str]] = {}
+    for curated in _CURATED_MODS:
+        if curated.numeric:
+            continue  # property lines kept their id
+        try:
+            pattern = re.compile(curated.pattern)
+        except re.error:
+            continue
+        found[curated.id] = [m.id for m in generated if pattern.search(m.label)]
+    _legacy_cache = found
+    return _legacy_cache
+
+
+def by_id() -> dict[str, MapMod]:
+    """Options keyed by id. A function, not a module global, because code
+    *inside* this module cannot reach the lazy ``BY_ID`` attribute -- module
+    __getattr__ only answers lookups from outside."""
+    return {mod.id: mod for mod in all_mods()}
+
+
+def __getattr__(name: str):
+    """``MAP_MODS`` and ``BY_ID`` on demand.
+
+    Module-level rather than eager because building them reads several
+    megabytes of game data, and importing this module must stay cheap -- it
+    is imported on the hotkey path, where the price of a 200ms load would be
+    paid by whichever keypress happened to be first.
+    """
+    if name == "MAP_MODS":
+        return all_mods()
+    if name == "BY_ID":
+        return by_id()
+    raise AttributeError(name)
 
 
 # ---------------------------------------------------------------------------
@@ -295,7 +585,7 @@ def coverage() -> dict[str, list[str]]:
         for ref, wordings in data.area_mods()
     ]
     found: dict[str, list[str]] = {}
-    for mod in MAP_MODS:
+    for mod in all_mods():
         if mod.numeric:
             found[mod.id] = ["(지도 속성 줄)"]
             continue
@@ -382,7 +672,7 @@ def fragment_for(mod_id: str, threshold: str | int = "") -> str:
     a qualifying number can take, so "아이템 수량: +107%" is tested as a
     number rather than as the words around it.
     """
-    mod = BY_ID.get(mod_id)
+    mod = by_id().get(mod_id)
     if mod is None:
         return ""
     try:
@@ -422,7 +712,7 @@ def build_pattern(
     fragments = [
         fragment_for(mod_id, thresholds.get(mod_id, ""))
         for mod_id in mod_ids
-        if mod_id in BY_ID
+        if mod_id in by_id()
     ]
     fragments += [part.strip() for part in extra.split(",") if part.strip()]
     # Deduplicated in place: two ticked mods can share a fragment (they are

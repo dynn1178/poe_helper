@@ -420,6 +420,42 @@ class GameActions:
                 except Exception:
                     logger.debug("could not restore the clipboard", exc_info=True)
 
+    def map_regex_check(self) -> None:
+        """Copy the hovered map and show it against the 맵모드 filter.
+
+        The same borrow-and-restore dance as the price check: this takes the
+        clipboard from whatever the user had on it, and keeping a copied
+        stash-tab name hostage because a map was inspected is not an
+        acceptable price.
+        """
+        import pyperclip
+
+        try:
+            previous = pyperclip.paste()
+        except Exception:
+            previous = ""
+
+        try:
+            input_io.copy_hovered_item()
+            # The client writes the clipboard asynchronously; without a beat
+            # the read below returns whatever was there before.
+            time.sleep(0.14)
+            try:
+                copied = pyperclip.paste()
+            except Exception:
+                logger.debug("could not read the clipboard", exc_info=True)
+                return
+            if "아이템 희귀도" not in copied and "Rarity" not in copied:
+                toast.show("지도 위에 마우스를 올린 상태에서 눌러주세요.")
+                return
+            self.root.after(0, self.root.open_map_check, copied)
+        finally:
+            if previous:
+                try:
+                    pyperclip.copy(previous)
+                except Exception:
+                    logger.debug("could not restore the clipboard", exc_info=True)
+
     # ---- 보관함 -> 인벤: 검색으로 강조된 아이템만 -----------------------
     _MAX_PASSES = 12
     # Clicks one run is allowed to send. Pulling out of a stash stops well
