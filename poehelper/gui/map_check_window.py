@@ -46,8 +46,40 @@ _MODE_LABELS = {
 _EXCLUDE_COLOR = "#e05252"
 _INCLUDE_COLOR = "#4f9ae0"
 _SUSPECT_COLOR = "#e0a33a"
+# Row fills, light/dark pair. Tinted rather than saturated: the row still has
+# to be read, and the text on it is already carrying the same colour.
+_INCLUDE_SHADE = ("#d8e8f8", "#1d3450")
+_EXCLUDE_SHADE = ("#f8dcdc", "#4a2020")
 _PLAIN = ("#3a3a3c", "#c8c8cc")
 _DIM = ("#8a8a8e", "#6e6e73")
+
+
+def _mod_lines(item_text: str) -> list[str]:
+    """The map's modifiers, as the item parser understands them.
+
+    Not "every line that is not a header or a reminder", which is what a
+    shape test gives and which also returns the separators, the map's name
+    and its tier. The price check's parser already knows an item's structure
+    -- which block is properties, which is modifiers -- so it is asked
+    instead of the question being answered twice, differently.
+
+    Falls back to the shape test when the parser cannot read the item, so a
+    map it has not learned still shows something.
+    """
+    try:
+        from ..trade import item as trade_item
+
+        parsed = trade_item.parse(item_text)
+    except Exception:  # noqa: BLE001 - the window must open regardless
+        logger.debug("could not parse the map", exc_info=True)
+        parsed = None
+    if parsed is not None and parsed.mods:
+        return [mod.text.strip() for mod in parsed.mods]
+    return [
+        line.strip()
+        for line in item_text.splitlines()
+        if line.strip() and map_mods.classify_line(line) == map_mods.MOD_LINE
+    ]
 
 
 def matched_lines(pattern: str, item_text: str) -> dict[str, list[str]]:
@@ -113,55 +145,76 @@ class MapCheckWindow(ctk.CTkToplevel):
         legend = ctk.CTkFrame(self, fg_color="transparent")
         legend.pack(fill="x", padx=14, pady=(6, 2))
         colour = _EXCLUDE_COLOR if mode == EXCLUDE else _INCLUDE_COLOR
-        for text, fg in (
-            (f"■ 조건에 걸린 옵션 ({'제외' if mode == EXCLUDE else '포함'})", colour),
-            ("■ 옵션이 아닌 줄에 걸림 (조각이 잘못됨)", _SUSPECT_COLOR),
-        ):
-            ctk.CTkLabel(legend, text=text, font=theme.FONT_CAPTION, text_color=fg).pack(
-                side="left", padx=(0, 14)
-            )
+        chip = ctk.CTkFrame(
+            legend, fg_color=_EXCLUDE_SHADE if mode == EXCLUDE else _INCLUDE_SHADE,
+            corner_radius=5, height=20,
+        )
+        chip.pack(side="left")
+        ctk.CTkLabel(
+            chip, text=f"조건에 걸린 옵션 ({'제외' if mode == EXCLUDE else '포함'})",
+            font=theme.FONT_CAPTION, text_color=colour,
+        ).pack(padx=8, pady=1)
 
         body = ctk.CTkScrollableFrame(self, fg_color=("#f6f6f8", "#232325"))
         body.pack(fill="both", expand=True, padx=14, pady=(4, 8))
 
+        # The map's modifiers and nothing else. The property lines, the affix
+        # headers and the rules paragraphs are on every map and reading past
+        # them is the work this window is supposed to remove -- what is being
+        # decided is "which of this map's options does my filter catch", and
+        # that is a list of about eight lines.
+        shading = _EXCLUDE_SHADE if mode == EXCLUDE else _INCLUDE_SHADE
+        mods = _mod_lines(self.item_text)
         shown = 0
-        for raw in self.item_text.splitlines():
-            line = raw.strip()
-            if not line:
-                continue
+        for line in mods:
             fragments = hits.get(line)
-            kind = map_mods.classify_line(line)
             if fragments:
-                suspect = kind not in (map_mods.MOD_LINE, map_mods.PROPERTY_LINE)
-                fg = _SUSPECT_COLOR if suspect else colour
-                font = theme.FONT_BODY_STRONG
                 shown += 1
-            else:
-                fg = _DIM if kind != map_mods.MOD_LINE else _PLAIN
-                font = theme.FONT_BODY
+            # Shaded, not coloured: a filled row reads as "this one" at a
+            # glance down a list, where coloured text has to be read.
+            row = ctk.CTkFrame(
+                body, fg_color=shading if fragments else "transparent", corner_radius=6,
+            )
+            row.pack(fill="x", padx=4, pady=1)
             ctk.CTkLabel(
-                body, text=line, font=font, text_color=fg,
-                anchor="w", justify="left", wraplength=590,
-            ).pack(fill="x", anchor="w", padx=6, pady=1)
+                row, text=line,
+                font=theme.FONT_BODY_STRONG if fragments else theme.FONT_BODY,
+                text_color=colour if fragments else _PLAIN,
+                anchor="w", justify="left", wraplength=560,
+            ).pack(side="left", fill="x", expand=True, padx=(8, 4), pady=3)
             if fragments:
                 ctk.CTkLabel(
-                    body, text="       ↳ " + ", ".join(fragments),
-                    font=theme.FONT_CAPTION, text_color=fg,
-                    anchor="w", justify="left", wraplength=560,
-                ).pack(fill="x", anchor="w", padx=6)
+                    row, text=", ".join(fragments), font=theme.FONT_CAPTION,
+                    text_color=colour, anchor="e", width=120,
+                ).pack(side="right", padx=(4, 8))
+
+        if not mods:
+            ctk.CTkLabel(
+                body, text="이 지도에는 옵션이 없습니다.", font=theme.FONT_BODY,
+                text_color=_DIM, anchor="w",
+            ).pack(fill="x", padx=8, pady=6)
+
+        # A fragment landing on an affix header or a reminder paragraph is a
+        # bug in the fragment, and hiding those lines would hide it too -- so
+        # it is still counted, just not spelled out line by line.
+        stray = sum(
+            1
+            for line, _f in hits.items()
+            if map_mods.classify_line(line) not in (map_mods.MOD_LINE, map_mods.PROPERTY_LINE)
+        )
 
         foot = ctk.CTkFrame(self, fg_color="transparent")
         foot.pack(fill="x", padx=14, pady=(0, 12))
+        summary = f"옵션 {len(mods)}개 중 {shown}개가 조건에 걸림"
         ctk.CTkLabel(
-            foot,
-            text=(
-                f"걸린 줄 {shown}개   ·   스페이스바 · Esc · 다른 곳 클릭으로 닫기"
-                if shown
-                else "이 지도에는 조건에 걸리는 줄이 없습니다   ·   "
-                     "스페이스바 · Esc · 다른 곳 클릭으로 닫기"
-            ),
+            foot, text=f"{summary}   ·   스페이스바 · Esc · 다른 곳 클릭으로 닫기",
             font=theme.FONT_CAPTION, text_color=theme.PRIMARY, anchor="w",
         ).pack(side="left")
+        if stray:
+            ctk.CTkLabel(
+                foot, text=f"⚠ 옵션이 아닌 줄에 걸린 조각 {stray}개",
+                font=theme.FONT_CAPTION, text_color=_SUSPECT_COLOR, anchor="e",
+            ).pack(side="right")
 
     def _take_focus(self) -> None:
         try:

@@ -66,6 +66,10 @@ def open_map_check(master, pattern: str, item_text: str):
 _MODE_LABELS = {INCLUDE: "포함(하나)", INCLUDE_ALL: "포함(모두)", EXCLUDE: "제외"}
 _MODE_BY_LABEL = {label: mode for mode, label in _MODE_LABELS.items()}
 _ALL_CATEGORIES = "전체 분류"
+# How long the search box waits before re-filtering. Long enough that a
+# Korean syllable finishes composing (an IME reports each jamo as a change),
+# short enough to feel immediate.
+_FILTER_DELAY_MS = 180
 
 _MODE_HELP = (
     "포함(하나): 체크한 조건이 하나라도 맞는 지도만 남깁니다.\n"
@@ -123,6 +127,10 @@ class RegexTab(ctk.CTkFrame):
         # mod list still belonging to the previous one.
         self._loading = False
         self._rows: list[tuple[MapMod, ctk.BooleanVar, ctk.CTkCheckBox]] = []
+        # What is packed right now, in order, so a filter that changes
+        # nothing can do nothing. See _apply_filter.
+        self._shown: list = []
+        self._filter_after: str | None = None
 
         self._build_preset_bar()
         self._build_editor()
@@ -214,7 +222,7 @@ class RegexTab(ctk.CTkFrame):
             filter_row, textvariable=self.search_var, width=170,
             placeholder_text="옵션 이름 일부",
         ).pack(side="left", padx=(4, 8))
-        self.search_var.trace_add("write", lambda *_: self._apply_filter())
+        self.search_var.trace_add("write", lambda *_: self._schedule_filter())
 
         self.category_var = ctk.StringVar(value=_ALL_CATEGORIES)
         ctk.CTkOptionMenu(
@@ -291,9 +299,28 @@ class RegexTab(ctk.CTkFrame):
         Tooltip(box, _explain(mod, catches))
         return (mod, var, parent if mod.numeric else box, threshold)
 
+    def _schedule_filter(self) -> None:
+        """Re-filter once the typing stops, not once per keystroke.
+
+        The list is two hundred rows and filtering re-lays out every one of
+        them, which is a visible stutter to run per character -- and Korean
+        is worse than that: an IME fires a write for every *jamo*, so typing
+        one syllable re-laid the list three times and the box appeared to be
+        stuttering out half-formed letters. A short delay collapses a burst
+        of keystrokes into the one filter anybody wanted.
+        """
+        if self._filter_after is not None:
+            try:
+                self.after_cancel(self._filter_after)
+            except tk.TclError:
+                pass
+        self._filter_after = self.after(_FILTER_DELAY_MS, self._apply_filter)
+
     def _apply_filter(self) -> None:
+        self._filter_after = None
         needle = self.search_var.get().strip().lower()
         category = self.category_var.get()
+        wanted = []
         for mod, _var, widget, _threshold in self._rows:
             if mod is None:  # a category heading
                 visible = not needle and category == _ALL_CATEGORIES
@@ -307,9 +334,17 @@ class RegexTab(ctk.CTkFrame):
                     )
                 )
             if visible:
-                widget.pack(fill="x", anchor="w", padx=(2, 0), pady=1)
-            else:
-                widget.pack_forget()
+                wanted.append(widget)
+        if wanted == self._shown:
+            # Typing on past the last character that changed anything. Every
+            # pack() here is real geometry work even when it lands the widget
+            # exactly where it already was.
+            return
+        for widget in self._shown:
+            widget.pack_forget()
+        for widget in wanted:
+            widget.pack(fill="x", anchor="w", padx=(2, 0), pady=1)
+        self._shown = wanted
 
     def _clear_checks(self) -> None:
         for mod, var, _widget, threshold in self._rows:

@@ -800,7 +800,34 @@ def _match(text: str, kind: str, item: ParsedItem, data: GameData) -> StatMatch 
         # 수 있음" on a unique) still has to be searchable when it turns up
         # under some other header.
         found = data.match_stat(text, "explicit", item.category)
+    if found is not None and not item.advanced:
+        _widen_uncertain_kind(found, text, item, data)
     return found
+
+
+def _widen_uncertain_kind(found: StatMatch, text: str, item: ParsedItem, data: GameData) -> None:
+    """Search a line as an implicit *and* an explicit when we cannot tell.
+
+    Without advanced mod descriptions there are no ``{ ... }`` headers, so
+    nothing on the item says which of its blocks is the implicit one -- every
+    mod is read as an explicit because that is the common case. For most
+    stats it makes no difference, but the site indexes the two separately
+    under the same wording: a synthesised ring's "민첩 +7" is
+    ``implicit.stat_3261801346`` and searching ``explicit.stat_3261801346``
+    returns nothing at all, however many such rings are for sale.
+
+    So when the kind is a guess, both ids go in and the search asks for
+    either. That can only widen the result set, where guessing wrong empties
+    it -- and the moment the player turns advanced descriptions on, the
+    header says which it is and this stops applying.
+    """
+    for other in ("implicit", "explicit"):
+        alternative = data.match_stat(text, other, item.category)
+        if alternative is None:
+            continue
+        for stat_id in alternative.ids:
+            if stat_id not in found.ids:
+                found.ids.append(stat_id)
 
 
 def _mod(text: str, found: StatMatch | None, **common) -> ItemMod:

@@ -362,44 +362,68 @@ def influence_filters(item: ParsedItem, data) -> list[tuple[str, list[str]]]:
     return out
 
 
-def _stat_entry(selection: Selection) -> dict | None:
-    """One entry for the query's stat list.
+def _one_filter(stat_id: str, selection: Selection) -> dict:
+    """One ``{id, value}`` entry, honouring the markers on a merged id.
 
-    A mod that resolves to several ids -- the same wording published as two
-    different stats -- becomes a nested "count" group asking for at least one
-    of them, which is the site's own way of saying "either of these".
+    :mod:`gamedata` prefixes an id it merged in from another stat, because
+    the merge changes what a value on it means:
+
+    ``{empty}``
+        The capped form of the mod, indexed as a flag rather than a number.
+        Asking it for "at least 100" matches nothing.
+    ``{empty_if_100}``
+        The same, but only when the roll actually is the cap.
+    ``{div_by_100}``
+        The other stat counts what this one expresses as a percentage.
     """
-    ids = selection.stat_ids
-    if not ids:
-        return None
     bounds: dict[str, float] = {}
     if selection.minimum is not None:
         bounds["min"] = selection.minimum
     if selection.maximum is not None:
         bounds["max"] = selection.maximum
 
-    if len(ids) == 1:
-        entry: dict = {"id": ids[0], "disabled": False}
-        if bounds:
-            entry["value"] = bounds
-        return entry
+    at_cap = selection.minimum == 100 or selection.maximum == 100
+    if stat_id.startswith("{empty}") or (
+        stat_id.startswith("{empty_if_100}") and at_cap
+    ):
+        bounds = {}
+    elif stat_id.startswith("{div_by_100}"):
+        bounds = {key: value / 100 for key, value in bounds.items()}
+    if stat_id.startswith("{"):
+        stat_id = stat_id[stat_id.index("}") + 1:]
 
-    filters = []
-    for stat_id in ids:
-        # An id the game's data marked "{empty}" is the capped form of the
-        # mod, indexed as a flag rather than as a number; asking it for "at
-        # least 100" matches nothing.
-        flag = stat_id.startswith("{empty}")
-        entry = {"id": stat_id.removeprefix("{empty}"), "disabled": False}
-        if bounds and not flag:
-            entry["value"] = dict(bounds)
-        filters.append(entry)
-    return {
-        "type": "count",
-        "value": {"min": 1},
-        "filters": filters,
-        "disabled": False,
-    }
+    entry: dict = {"id": stat_id, "disabled": False}
+    if bounds:
+        entry["value"] = bounds
+    return entry
+
+
+def _add_selection(selection: Selection, stats: list[dict]) -> None:
+    """Put one ticked filter into the query's stat groups.
+
+    A filter with a single id joins the "and" group with the rest. One with
+    several -- the same wording published as two stats, or a line whose kind
+    could not be determined -- becomes a "count" group asking for at least
+    one of them.
+
+    That group goes in as a *sibling* of the "and" group, never inside it.
+    The site rejects a group nested in a group outright, and the message it
+    answers with says nothing about nesting: ``Invalid stat hash type``.
+    """
+    ids = selection.stat_ids
+    if not ids:
+        return
+    if len(ids) == 1:
+        stats[0]["filters"].append(_one_filter(ids[0], selection))
+        return
+    stats.append(
+        {
+            "type": "count",
+            "value": {"min": 1},
+            "disabled": False,
+            "filters": [_one_filter(stat_id, selection) for stat_id in ids],
+        }
+    )
 
 
 def build(
@@ -450,9 +474,7 @@ def build(
         }
 
     for selection in selected:
-        entry = _stat_entry(selection)
-        if entry is not None:
-            query["stats"][0]["filters"].append(entry)
+        _add_selection(selection, query["stats"])
 
     # Links, quality, corruption, DPS and the rest are chosen in the window
     # rather than inferred here: what counts as part of "the same item" is a
