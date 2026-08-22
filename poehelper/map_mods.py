@@ -71,7 +71,11 @@ a failure, and the fix is to anchor it further rather than to accept it.
 """
 from __future__ import annotations
 
+import logging
+import re
 from dataclasses import dataclass
+
+logger = logging.getLogger(__name__)
 
 # The 50-character ceiling on the game's search box. Not enforced -- a longer
 # pattern is still a perfectly good thing to keep in a preset and paste
@@ -150,13 +154,20 @@ MAP_MODS: list[MapMod] = [
     MapMod("monster_crit", MONSTER, "몬스터 치명타 확률 / 피해 배율 증가", "배율"),
     # "몬스터가 20초마다 격분 충전 3개 획득" -- the timer is what makes this
     # line unmistakable; 충전 alone also catches the flask mods.
-    MapMod("monster_charges", MONSTER, "몬스터가 주기적으로 충전 획득", "20초마다"),
+    # 20초마다 was the wording years ago; the game now grants charges on hit
+    # and on being hit. Checked against the game's own area-mod list, which
+    # has four such mods and none mentioning a timer.
+    MapMod("monster_charges", MONSTER, "몬스터가 명중/피격 시 충전 획득", "충전 획득"),
     # 가 명중 시, not 명중 시: the 취약성 reminder contains "명중 시 대상에게
     # 출혈을 유발할 확률", and 취약성 is one of the most common map curses.
     MapMod("monster_ailments", MONSTER, "몬스터가 명중 시 상태 이상·충전 획득", "가 명중 시"),
     # Covers both 긴급회피 (원소 상태 이상) and the plain 중독·꿰뚫기·출혈 회피.
     MapMod("monster_avoid", MONSTER, "몬스터가 상태 이상·중독·출혈 회피", "회피"),
-    MapMod("monster_res", MONSTER, "몬스터 저항 증가", r"저항 \+"),
+    # The game prints "몬스터의 원소 저항 40%" with no plus sign, so the old
+    # "저항 \+" matched nothing at all. Anchored on 몬스터의 so it cannot
+    # catch the penetration mod ("몬스터 피해가 …의 원소 저항 관통") or the
+    # player's own 최대치 mod, both of which are separate options here.
+    MapMod("monster_res", MONSTER, "몬스터 원소·카오스 저항 증가", "몬스터의.{0,5}저항"),
     MapMod("monster_pdr", MONSTER, "몬스터 물리 피해 감소", "피해 감소"),
     # 사술 on its own matched "...부여하는 사술입니다" in every curse's
     # reminder text. 사술 반사 is already covered by the 반사 entry.
@@ -200,20 +211,24 @@ MAP_MODS: list[MapMod] = [
     MapMod("more_maps", REWARD, "지도 더 많음", "지도 더 많음", r"지도 더 많음: \+"),
     MapMod("scarab", REWARD, "갑충석", "갑충석", r"갑충석 더 많음: \+"),
     MapMod("currency", REWARD, "화폐", "화폐", r"화폐 더 많음: \+"),
-    MapMod("divination", REWARD, "점술 카드", "점술"),
+    # The client prints this as its own property line ("점술 카드 증폭: +30%"),
+    # exactly like the four above it -- so it gets the same treatment. A bare
+    # 점술 also matched the reminder text under an unrelated mod.
+    MapMod("divination", REWARD, "점술 카드 증폭", "점술 카드 증폭", r"점술 카드 증폭: \+"),
 
     # ---- 콘텐츠 ------------------------------------------------------------
     MapMod("beyond", CONTENT, "이계", "이계"),
     MapMod("breach", CONTENT, "균열", "균열"),
     MapMod("legion", CONTENT, "군단", "군단"),
     MapMod("abyss", CONTENT, "심연", "심연"),
-    MapMod("essence", CONTENT, "에센스", "에센스"),
+    # An essence is a 갇힌 몬스터 on the map; the word 에센스 never appears.
+    MapMod("essence", CONTENT, "에센스 (갇힌 몬스터)", "갇힌 몬스터"),
     MapMod("harbinger", CONTENT, "선구자", "선구자"),
     MapMod("delirium", CONTENT, "환영", "환영"),
     MapMod("ritual", CONTENT, "의식", "의식"),
     MapMod("expedition", CONTENT, "탐험", "탐험"),
     MapMod("blight", CONTENT, "역병", "역병"),
-    MapMod("harvest", CONTENT, "수확", "수확"),
+    MapMod("harvest", CONTENT, "수확 (신성한 숲)", "신성한 숲"),
     MapMod("ultimatum", CONTENT, "결전", "결전"),
     MapMod("shrine", CONTENT, "성소", "성소"),
     MapMod("strongbox", CONTENT, "금고", "금고"),
@@ -225,6 +240,75 @@ MAP_MODS: list[MapMod] = [
 BY_ID = {mod.id: mod for mod in MAP_MODS}
 
 INCLUDE, INCLUDE_ALL, EXCLUDE = "include", "include_all", "exclude"
+
+
+# ---------------------------------------------------------------------------
+# Checking a fragment against what a map can actually roll
+# ---------------------------------------------------------------------------
+# The fragments above are short by necessity and therefore wrong in two ways
+# that reading them cannot catch: one that matches no real mod filters out
+# every map, and one that matches too much throws away the maps worth
+# running. Both look identical from the outside -- a list that came back
+# shorter than expected.
+#
+# The game's own data settles it. Every modifier a map can carry is marked
+# in it (see :meth:`GameData.area_mods`), with the text the client prints, so
+# a fragment can simply be run against all of them. That is what the 맵모드
+# tab shows next to each option, and what ``tools/check_map_mods.py`` reports
+# in bulk.
+#
+# Rechecked whenever the game data is refreshed rather than recorded here,
+# because a wording the game changes is exactly the case a hand-kept note
+# would get wrong.
+_coverage: dict[str, list[str]] | None = None
+
+
+def coverage() -> dict[str, list[str]]:
+    """Which real map modifiers each fragment catches, keyed by mod id.
+
+    An empty list means the fragment matches nothing the game can put on a
+    map -- either the wording moved or the mod no longer exists. A fragment
+    for a *property* line (one with ``numeric``) is not a modifier at all and
+    is reported as covered by definition; the client prints those on every
+    map and they are checked by the threshold, not by the fragment.
+
+    Answers ``{}`` when the game data is unavailable, which the UI reads as
+    "nothing to say" rather than as "every option is broken".
+    """
+    global _coverage
+    if _coverage is not None:
+        return _coverage
+    try:
+        from .trade import gamedata
+
+        data = gamedata.load()
+    except Exception:  # noqa: BLE001 - a missing data file must not break the tab
+        logger.debug("map-mod coverage unavailable", exc_info=True)
+        data = None
+    if data is None:
+        return {}
+
+    # "#" is where the data writes a rolled number; on the item it is a
+    # digit, and a fragment may legitimately anchor just past one.
+    corpus = [
+        (ref, [w.replace("#", "7") for w in wordings])
+        for ref, wordings in data.area_mods()
+    ]
+    found: dict[str, list[str]] = {}
+    for mod in MAP_MODS:
+        if mod.numeric:
+            found[mod.id] = ["(지도 속성 줄)"]
+            continue
+        try:
+            pattern = re.compile(mod.pattern)
+        except re.error:
+            found[mod.id] = []
+            continue
+        found[mod.id] = [
+            ref for ref, wordings in corpus if any(pattern.search(w) for w in wordings)
+        ]
+    _coverage = found
+    return _coverage
 
 # Percentages on a map do not reach four figures, and assuming they do not
 # keeps the generated threshold short enough to be worth having.

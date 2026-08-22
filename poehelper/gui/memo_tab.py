@@ -17,6 +17,7 @@ from typing import Callable
 
 import customtkinter as ctk
 
+from .. import toast
 from ..config import Config
 from . import theme
 from .widgets.tooltip import Tooltip
@@ -38,6 +39,17 @@ _CARD_HEIGHT = 92
 # How much of the card's width the text has left after its own padding.
 _CARD_TEXT_INSET = 28
 _PREVIEW_CHARS = 60
+
+
+class _Off:
+    """Stands in for a tick that does not exist yet: always unticked."""
+
+    @staticmethod
+    def get() -> bool:
+        return False
+
+
+_OFF = _Off()
 
 
 class MemoTab(ctk.CTkFrame):
@@ -72,8 +84,26 @@ class MemoTab(ctk.CTkFrame):
         top = ctk.CTkFrame(self.card_view, fg_color="transparent")
         top.pack(fill="x", padx=8, pady=(8, 4))
         ctk.CTkButton(top, text="+ 새 메모", width=90, command=self._new_memo).pack(side="left")
+
+        # Bulk actions, next to the button that creates the things they act
+        # on. Deleting is the only destructive one here, so it is the only
+        # one coloured -- and it says how many it would take with it, since
+        # the ticks are small and easy to lose track of.
+        ctk.CTkButton(
+            top, text="전체 선택", width=76, command=lambda: self._select_all(True)
+        ).pack(side="left", padx=(8, 0))
+        ctk.CTkButton(
+            top, text="선택 해제", width=76, command=lambda: self._select_all(False)
+        ).pack(side="left", padx=(4, 0))
+        self.delete_button = ctk.CTkButton(
+            top, text="선택 삭제", width=90, command=self._delete_selected,
+            fg_color=theme.DANGER, hover_color=theme.DANGER_HOVER,
+        )
+        self.delete_button.pack(side="left", padx=(4, 0))
+
         hint = ctk.CTkLabel(
-            top, text="카드를 더블클릭하면 메모 내용으로 들어갑니다.", text_color=("#7a7a7a", "#8e8e93")
+            top, text="카드를 더블클릭하면 메모 내용으로 들어갑니다.",
+            text_color=("#7a7a7a", "#8e8e93"),
         )
         hint.pack(side="left", padx=(10, 0))
 
@@ -94,6 +124,10 @@ class MemoTab(ctk.CTkFrame):
         self._preview_width = 0
         self.card_scroll.bind("<Configure>", self._on_grid_resize)
 
+        # Which cards are ticked, keyed by memo id rather than by position:
+        # a tick has to survive the re-render that follows a deletion, and
+        # after one the card at index 3 is a different memo.
+        self._checked: dict[str, ctk.BooleanVar] = {}
         self._render_cards()
 
     def _on_grid_resize(self, event) -> None:
@@ -126,6 +160,10 @@ class MemoTab(ctk.CTkFrame):
         self._previews: list[ctk.CTkLabel] = []
 
         memos = self._memos()
+        # Ticks for memos that no longer exist would keep 선택 삭제 reporting
+        # a count nothing on screen accounts for.
+        alive = {m["id"] for m in memos}
+        self._checked = {k: v for k, v in self._checked.items() if k in alive}
         for idx, memo in enumerate(memos):
             row, col = divmod(idx, _CARD_COLUMNS)
             self._build_card(memo, row, col)
@@ -134,6 +172,7 @@ class MemoTab(ctk.CTkFrame):
         # different height from the rows above it.
         for row in range((len(memos) + _CARD_COLUMNS - 1) // _CARD_COLUMNS):
             self.card_scroll.grid_rowconfigure(row, minsize=_CARD_HEIGHT + 12)
+        self._refresh_delete_button()
 
     def _build_card(self, memo: dict, row: int, col: int) -> None:
         card = ctk.CTkFrame(
@@ -169,6 +208,17 @@ class MemoTab(ctk.CTkFrame):
         )
         delete_btn.place(relx=1.0, x=-6, y=6, anchor="ne")
 
+        # Placed rather than packed, in the corner opposite the X, so ticking
+        # a card for a bulk delete is never a mis-click on the one that
+        # deletes it immediately.
+        checked = self._checked.setdefault(memo["id"], ctk.BooleanVar(value=False))
+        select = ctk.CTkCheckBox(
+            card, text="", width=18, checkbox_width=17, checkbox_height=17,
+            variable=checked, command=self._refresh_delete_button,
+        )
+        select.place(relx=1.0, x=-34, y=7, anchor="ne")
+        Tooltip(select, "선택 삭제로 한 번에 지울 메모를 고릅니다.")
+
         for widget in (card, name_label, preview):
             widget.bind("<Double-Button-1>", lambda _e, mid=memo["id"]: self._open_detail(mid))
             Tooltip(widget, "더블클릭하면 이 메모 내용으로 들어갑니다.")
@@ -190,6 +240,59 @@ class MemoTab(ctk.CTkFrame):
             memos.remove(memo)
             self.config.save()
         self._render_cards()
+
+    # ---- bulk selection ---------------------------------------------------
+    def _selected_ids(self) -> list[str]:
+        """Ticked memos, in the order they are shown.
+
+        Read off the ticks rather than kept as a separate list, so a memo
+        deleted or added by any other route cannot leave a stale entry
+        behind.
+        """
+        return [m["id"] for m in self._memos() if self._checked.get(m["id"], _OFF).get()]
+
+    def _select_all(self, on: bool) -> None:
+        for var in self._checked.values():
+            var.set(on)
+        self._refresh_delete_button()
+
+    def _refresh_delete_button(self) -> None:
+        """Say how many the delete button would take, and disable it at zero.
+
+        A bulk delete with nothing ticked is the one press of this button
+        that has no visible effect, which reads as the button being broken.
+        """
+        button = getattr(self, "delete_button", None)
+        if button is None:
+            return
+        count = len(self._selected_ids())
+        button.configure(
+            text=f"선택 삭제 ({count})" if count else "선택 삭제",
+            state="normal" if count else "disabled",
+        )
+
+    def _delete_selected(self) -> None:
+        """Remove every ticked memo, keeping at least one behind.
+
+        The last memo is kept for the same reason the per-card X keeps it:
+        the tab has no empty state, and a grid of nothing offers no way back
+        except the 새 메모 button.
+        """
+        ids = set(self._selected_ids())
+        if not ids:
+            return
+        memos = self._memos()
+        keeping = [m for m in memos if m["id"] not in ids]
+        if not keeping:
+            keeping = [memos[-1]]
+        removed = len(memos) - len(keeping)
+        if not removed:
+            return
+        memos[:] = keeping
+        self.config.save()
+        self._render_cards()
+        if removed < len(ids):
+            toast.show("메모는 최소 하나가 남습니다.\n마지막 하나는 지우지 않았습니다.")
 
     def _show_card_view(self) -> None:
         self.detail_view.pack_forget()

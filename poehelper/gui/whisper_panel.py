@@ -9,9 +9,14 @@ responding to keys the moment a whisper arrived (see ``overlay_win``). It gets
 ``WS_EX_NOACTIVATE`` without click-through: mouse clicks arrive, activation
 never does, and the buttons still work.
 
-*It gets out of the way on its own.* Cards hide after a few seconds, leaving
-only a thin bar. Putting the pointer on that bar brings the list back, so
-nothing is lost by not reading it immediately.
+*It gets out of the way completely.* Cards hide after a few seconds and the
+bar fades out with them, so a session where nobody whispers has no panel on
+screen at all. A new whisper brings it back, and so does putting the pointer
+where it lives -- which is how you read one you did not get to in time.
+
+While faded it is also click-through, because the two have to travel
+together: a window that is invisible but still hit-tested swallows clicks
+meant for the game at a spot with nothing there to warn you.
 
 *The dangerous button is somewhere else.* 차단 sits in its own corner, away
 from the three buttons pressed constantly, because a misplaced click there is
@@ -77,12 +82,17 @@ class WhisperPanel(tk.Toplevel):
         self._placing = False
         self._list_shown = False
         self._elapsed_labels: list = []
+        # Starts hidden: nothing has whispered yet, so there is nothing for
+        # the bar to be on screen for. _set_visible flips it on first arrival.
+        self._visible = True
 
         self.configure(bg=theme.OVERLAY_BG)
         self.geometry(f"+{int(self.geo.get('x', 40))}+{int(self.geo.get('y', 120))}")
 
         self._build()
         overlay_win.show_passive(self, click_through=False)
+        # Nothing has whispered yet, so there is nothing to be on screen for.
+        self._set_visible(False)
         self._poll_hover()
         self.after(_PURGE_MS, self._purge)
         self._tick_elapsed()
@@ -325,6 +335,7 @@ class WhisperPanel(tk.Toplevel):
 
     # ---- showing and hiding -----------------------------------------------
     def _show_list(self) -> None:
+        self._set_visible(True)
         # A boolean, not winfo_ismapped(): CTkScrollableFrame is an inner
         # frame managed by a canvas, so its ismapped() is 0 even when the
         # widget is plainly on screen -- which meant _hide_list never fired
@@ -352,6 +363,41 @@ class WhisperPanel(tk.Toplevel):
         if self._list_shown:
             self._list_shown = False
             self.list_frame.pack_forget()
+        self._set_visible(False)
+
+    # ---- fading the bar itself --------------------------------------------
+    # The bar used to sit on screen permanently, which is a strip of chrome
+    # over the game for the ninety-odd percent of a session when nothing has
+    # whispered. Now it fades out with the cards and comes back for a new
+    # whisper or when the pointer arrives.
+    #
+    # Fading alone would not do: an invisible window is still hit-tested, so
+    # it would go on swallowing clicks aimed at the game at a spot with
+    # nothing visible to warn the player. So the two travel together --
+    # invisible *and* click-through, opaque *and* interactive.
+    def _set_visible(self, visible: bool) -> None:
+        if self._closed or visible == self._visible:
+            return
+        self._visible = visible
+        try:
+            self.attributes("-alpha", 1.0 if visible else self._idle_alpha)
+        except tk.TclError:
+            return
+        overlay_win.set_click_through(self, not visible)
+
+    @property
+    def _idle_alpha(self) -> float:
+        """How visible the bar is with nothing to say.
+
+        0 hides it outright, which is what "평소 숨김" asks for. A small
+        value is offered instead for anyone who would rather still see where
+        it lives -- at 0 the only way to find it is to remember.
+        """
+        try:
+            value = float(self.cfg.get("idle_opacity", 0.0))
+        except (TypeError, ValueError):
+            return 0.0
+        return max(0.0, min(1.0, value))
 
     def _schedule_hide(self) -> None:
         if self._hide_after is not None:

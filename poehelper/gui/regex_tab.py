@@ -51,6 +51,40 @@ _MODE_HELP = (
 _TEXT = ("#1d1d1f", "#f2f2f5")
 
 
+def _explain(mod: MapMod, catches: list[str] | None) -> str:
+    """Tooltip for one option: the fragment, and what it really catches.
+
+    The list of matched modifiers is the useful half. These fragments are
+    short on purpose and it is never obvious from the text alone whether
+    "반사" means the three reflect mods or also half a reminder paragraph --
+    so the game's own answer is shown instead of asking anyone to trust the
+    wording.
+    """
+    lines = [f"정규식 조각: {mod.pattern}"]
+    if mod.numeric:
+        lines += [
+            "",
+            "숫자를 적으면 그 값 이상인 지도만 찾습니다.",
+            f"예) 100 → {map_mods.fragment_for(mod.id, 100)}",
+        ]
+    if catches is None:
+        return "\n".join(lines)
+    if not catches:
+        lines += [
+            "",
+            "⚠ 게임 데이터에서 이 조각과 맞는 지도 옵션을 찾지 못했습니다.",
+            "체크하면 모든 지도가 걸러질 수 있습니다.",
+        ]
+    elif catches == ["(지도 속성 줄)"]:
+        lines += ["", "지도 옵션이 아니라 지도에 항상 찍히는 속성 줄입니다."]
+    else:
+        lines += ["", f"실제로 잡는 지도 옵션 {len(catches)}개:"]
+        lines += [f"  · {ref}" for ref in catches[:8]]
+        if len(catches) > 8:
+            lines.append(f"  … 외 {len(catches) - 8}개")
+    return "\n".join(lines)
+
+
 class RegexTab(ctk.CTkFrame):
     def __init__(self, master, config: Config, **kwargs):
         super().__init__(master, fg_color="transparent", **kwargs)
@@ -211,21 +245,22 @@ class RegexTab(ctk.CTkFrame):
             ).pack(side="right", padx=(4, 2))
             threshold.trace_add("write", lambda *_: self._regenerate())
 
+        # What this fragment catches, checked against the game's own list of
+        # the modifiers a map can roll. A fragment that catches nothing is
+        # the dangerous case -- ticking it filters out every map, and an
+        # empty result looks exactly like a bad batch -- so it is said out
+        # loud on the row rather than left to the tooltip.
+        catches = map_mods.coverage().get(mod.id)
+        warn = catches is not None and not catches
         box = ctk.CTkCheckBox(
-            parent, text=f"{mod.label}   ·   {mod.pattern}",
+            parent,
+            text=f"{mod.label}   ·   {mod.pattern}" + ("   ⚠" if warn else ""),
             variable=var, font=theme.FONT_CAPTION, checkbox_width=17,
             checkbox_height=17, command=self._regenerate,
+            **({"text_color": theme.DANGER} if warn else {}),
         )
         box.pack(side="left", fill="x", expand=True) if mod.numeric else None
-        Tooltip(
-            box,
-            f"정규식 조각: {mod.pattern}"
-            + (
-                "\n\n숫자를 적으면 그 값 이상인 지도만 찾습니다.\n"
-                f"예) 100 → {map_mods.fragment_for(mod.id, 100)}"
-                if mod.numeric else ""
-            ),
-        )
+        Tooltip(box, _explain(mod, catches))
         return (mod, var, parent if mod.numeric else box, threshold)
 
     def _apply_filter(self) -> None:

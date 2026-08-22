@@ -117,6 +117,39 @@ def make_passive(win: tk.Misc, click_through: bool = True) -> None:
         logger.debug("could not apply overlay styles", exc_info=True)
 
 
+def set_click_through(win: tk.Misc, click_through: bool) -> None:
+    """Turn mouse hit-testing for *win* off and on again.
+
+    For an overlay that is only sometimes interactive. A window that is
+    invisible but still hit-tested is worse than a visible one: it swallows
+    clicks meant for the game at a spot the player cannot see, which is the
+    trap the whisper bar walks into the moment it fades itself out.
+
+    Hover detection has to be done by comparing the pointer position against
+    the window rect rather than by <Enter>/<Leave> events, since a
+    click-through window receives no mouse events at all. See
+    ``WhisperPanel._poll_hover``, which already worked that way.
+    """
+    parts = _user32()
+    if parts is None:
+        return
+    _user32_handle, getter, setter = parts
+    hwnd = _hwnd_of(win)
+    if not hwnd:
+        return
+    try:
+        current = getter(hwnd, _GWL_EXSTYLE)
+        wanted = (
+            current | _WS_EX_TRANSPARENT
+            if click_through
+            else current & ~_WS_EX_TRANSPARENT
+        )
+        if wanted != current:
+            setter(hwnd, _GWL_EXSTYLE, wanted)
+    except OSError:
+        logger.debug("could not change click-through", exc_info=True)
+
+
 def show_passive(win: tk.Misc, click_through: bool = True) -> None:
     """Reveal *win* as a non-activating overlay.
 

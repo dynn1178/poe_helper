@@ -278,7 +278,7 @@ class App(ctk.CTk):
             "물약": self._build_flask_tab,
             "게임 단축키": self._build_hotkeys_tab,
             "바로가기": self._build_links_tab,
-            "정규식": self._build_regex_tab,
+            "맵모드": self._build_regex_tab,
             "메모": self._build_memo_tab,
             "레벨업": self._build_levelup_tab,
             "좌표 설정": self._build_calibration_tab,
@@ -1998,9 +1998,12 @@ class App(ctk.CTk):
         # game, then hide the helper. They were only reachable from inside
         # the 기타 설정 tab before, which is two clicks away from a window
         # whose whole job is to be dismissed.
-        for label, key in (("POE1", "poe_launch_url"), ("POE2", "poe2_launch_url")):
+        for label, key in (
+            ("POE1 실행", "poe_launch_url"),
+            ("POE2 실행", "poe2_launch_url"),
+        ):
             button = ctk.CTkButton(
-                bar, text=label, width=64,
+                bar, text=label, width=88,
                 command=lambda k=key: self._launch_configured(k),
             )
             button.pack(side="left", padx=(8, 0))

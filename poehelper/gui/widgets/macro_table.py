@@ -1,7 +1,7 @@
 """Editable list of chat-phrase macros: the text, whether it is sent through
 the game's chat box, and its rebindable hotkey.
 
-The 채팅 tick is what separates the two things this list is used for. A
+The ENTER 필요 tick is what separates the two things this list is used for. A
 slash-command or a whisper has to go through the chat box -- opened, typed
 into, submitted with Enter -- and that is what the box being ticked means.
 Untick it and the phrase is only put on the clipboard and pasted wherever
@@ -23,6 +23,10 @@ from .hotkey_picker import HotkeyPicker
 from .reorder import DragReorder
 from .tooltip import Tooltip
 
+# The ENTER 필요 column. One constant so the heading and the tick under it
+# cannot drift apart.
+_CHAT_COL_WIDTH = 72
+
 
 class MacroTableEditor(ctk.CTkFrame):
     def __init__(
@@ -40,7 +44,13 @@ class MacroTableEditor(ctk.CTkFrame):
         header.pack(fill="x")
         ctk.CTkLabel(header, text="채팅 문구").pack(side="left", padx=(0, 4))
         ctk.CTkLabel(header, text="단축키", width=180).pack(side="right", padx=(4, 34))
-        ctk.CTkLabel(header, text="채팅", width=64).pack(side="right", padx=(4, 0))
+        # Named for what ticking it does rather than for the thing it is
+        # about: "채팅" over a column of checkboxes says nothing about which
+        # way is which, and this is the only control here whose two states do
+        # visibly different things to the game.
+        ctk.CTkLabel(header, text="ENTER 필요", width=_CHAT_COL_WIDTH).pack(
+            side="right", padx=(4, 0)
+        )
 
         self.scroll = ctk.CTkScrollableFrame(self, height=280)
         self.scroll.pack(fill="both", expand=True)
@@ -90,12 +100,19 @@ class MacroTableEditor(ctk.CTkFrame):
         ctk.CTkEntry(
             row, textvariable=text_var, placeholder_text="채팅 문구"
         ).pack(side="left", padx=(0, 4), fill="x", expand=True)
+        # In a fixed-width holder so the tick sits centred under its heading.
+        # A bare checkbox with an empty label still reserves room for the
+        # label, which left a wide dead strip to its right and pushed the
+        # hotkey picker out of line with the heading above it.
+        chat_cell = ctk.CTkFrame(row, fg_color="transparent", width=_CHAT_COL_WIDTH)
+        chat_cell.pack(side="left", padx=(0, 4))
+        chat_cell.pack_propagate(False)
         chat_box = ctk.CTkCheckBox(
-            row, text="", variable=chat_var, width=64,
-            checkbox_width=18, checkbox_height=18,
+            chat_cell, text="", width=18,
+            variable=chat_var, checkbox_width=18, checkbox_height=18,
             command=lambda: (self._refresh_tooltip(entry), self._notify()),
         )
-        chat_box.pack(side="left", padx=(0, 4))
+        chat_box.pack(expand=True)
         Tooltip(
             chat_box,
             "체크: Enter로 채팅창을 열고 문구를 넣은 뒤 Enter로 전송합니다.\n"

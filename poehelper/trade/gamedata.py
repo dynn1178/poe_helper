@@ -364,6 +364,8 @@ class GameData:
         # makes it usable as a dict key elsewhere.
         self._stat_matchers: dict[int, list[Matcher]] = {}
         self._by_ref: dict[str, Stat] = {}
+        # (stat, fromAreaMods) for the modifiers a map can roll. See area_mods.
+        self._area_mods: list[tuple[Stat, str]] = []
         self._items: dict[str, list[ItemInfo]] = {}
         self._bases: list[ItemInfo] = []
         self._load_stats()
@@ -395,6 +397,28 @@ class GameData:
             len(self._groups),
         )
 
+    def area_mods(self, include_uber: bool = True, include_heist: bool = False):
+        """Every modifier that can roll on a map, as the client prints it.
+
+        The game's data marks these itself (``fromAreaMods``), which is what
+        makes them worth having: the alternative is deciding by hand which of
+        eighteen thousand modifiers a map can carry, and being wrong about it
+        quietly. Used by :mod:`poehelper.map_mods` to check that each search
+        fragment really does catch the mods it claims to and nothing else.
+
+        Yields ``(ref, [wordings])`` -- every wording a mod has, because a
+        fragment has to survive all of them: "효과 범위 #% 증가" and "효과
+        범위 #% 감소" are the same mod rolled either way.
+        """
+        wanted = {"yes"}
+        if include_uber:
+            wanted.add("ubermap_exclusive")
+        if include_heist:
+            wanted.add("heist_exclusive")
+        for stat, scope in self._area_mods:
+            if scope in wanted:
+                yield stat.ref, [m.text for m in self.matchers_of(stat)]
+
     def find_by_ref(self, ref: str) -> Stat | None:
         """The stat with this English wording.
 
@@ -417,6 +441,9 @@ class GameData:
             slot=slot,
         )
         self._by_ref.setdefault(stat.ref, stat)
+        scope = raw.get("fromAreaMods")
+        if scope:
+            self._area_mods.append((stat, scope))
         mine = self._stat_matchers.setdefault(id(stat), [])
         for entry in raw.get("matchers", ()):
             for text in (entry.get("string"), entry.get("advanced")):

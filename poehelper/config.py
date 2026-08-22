@@ -159,7 +159,11 @@ DEFAULTS: dict[str, Any] = {
     "whisper": {
         "enabled": True,
         "open_on_start": True,
-        "hide_after_sec": 5,     # cards hide; the thin bar stays
+        "hide_after_sec": 5,     # cards hide, and the bar fades out with them
+        # How visible the bar is with nothing to say. 0 hides it outright;
+        # raise it slightly (0.15 or so) to keep a faint marker of where it
+        # lives, since at 0 the only way to find it is to remember.
+        "idle_opacity": 0.0,
         "keep_minutes": 30,      # older cards are swept up
         # What the three reply buttons send. Editable because the wording is
         # a matter of taste, and because a seller may want Korean instead.
