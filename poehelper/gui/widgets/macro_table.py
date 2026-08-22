@@ -59,19 +59,26 @@ class MacroTableEditor(ctk.CTkFrame):
         self.header = ctk.CTkFrame(self, fg_color="transparent", height=_HEADER_HEIGHT)
         self.header.pack(fill="x")
         self.header.pack_propagate(False)
-        ctk.CTkLabel(self.header, text="채팅 문구").pack(side="left", padx=(0, 4))
+        # All three headings are positioned from the widgets they label, and
+        # centred over them -- including 채팅 문구, which packed at the left
+        # edge sat a long way from the middle of the wide text column it
+        # names. A label placed at its column's x and width centres itself,
+        # since that is CTkLabel's default anchor.
+        #
+        # Sized on construction, not in place(): CustomTkinter rejects width
+        # and height as place() arguments outright.
+        def heading(text: str) -> ctk.CTkLabel:
+            return ctk.CTkLabel(
+                self.header, text=text, width=_CHAT_COL_WIDTH, height=_HEADER_HEIGHT
+            )
+
+        self.text_head = heading("채팅 문구")
         # Named for what ticking it does rather than for the thing it is
         # about: "채팅" over a column of checkboxes says nothing about which
         # way is which, and this is the only control here whose two states do
         # visibly different things to the game.
-        # Sized on construction, not in place(): CustomTkinter rejects width
-        # and height as place() arguments outright.
-        self.chat_head = ctk.CTkLabel(
-            self.header, text="ENTER 필요", width=_CHAT_COL_WIDTH, height=_HEADER_HEIGHT
-        )
-        self.key_head = ctk.CTkLabel(
-            self.header, text="단축키", width=_CHAT_COL_WIDTH, height=_HEADER_HEIGHT
-        )
+        self.chat_head = heading("ENTER 필요")
+        self.key_head = heading("단축키")
         self.header.bind("<Configure>", lambda _e: self._align_headers())
 
         self.scroll = ctk.CTkScrollableFrame(self, height=280)
@@ -119,9 +126,11 @@ class MacroTableEditor(ctk.CTkFrame):
         # so rows are draggable by this grip.
         self._drag.handle(row, entry).pack(side="left", padx=(0, 2))
 
-        ctk.CTkEntry(
+        text_entry = ctk.CTkEntry(
             row, textvariable=text_var, placeholder_text="채팅 문구"
-        ).pack(side="left", padx=(0, 4), fill="x", expand=True)
+        )
+        text_entry.pack(side="left", padx=(0, 4), fill="x", expand=True)
+        entry["entry"] = text_entry
         # In a fixed-size holder so the tick sits centred under its heading.
         # A bare checkbox with an empty label still reserves room for the
         # label, which left a wide dead strip to its right and pushed the
@@ -189,13 +198,14 @@ class MacroTableEditor(ctk.CTkFrame):
         if not self.rows:
             # Nothing to line up with, and a heading over an empty list names
             # nothing.
-            self.chat_head.place_forget()
-            self.key_head.place_forget()
+            for label in (self.text_head, self.chat_head, self.key_head):
+                label.place_forget()
             return
         first = self.rows[0]
         try:
             origin = self.header.winfo_rootx()
             for label, widget in (
+                (self.text_head, first["entry"]),
                 (self.chat_head, first["chat_cell"]),
                 (self.key_head, first["picker"]),
             ):
