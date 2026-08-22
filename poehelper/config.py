@@ -330,6 +330,41 @@ class Config:
         self._listeners: list[Callable[[], None]] = []
         self.load()
 
+    def _migrate_paths_to_links(self) -> None:
+        """The five 프로그램 경로 slots, folded into the shortcut list.
+
+        Those slots and the shortcut list did the same job -- run a program,
+        open a folder -- so the slots were dropped and their tab now points
+        at the list. Anything already saved in them has to come with it:
+        removing the boxes without this would leave five configured programs
+        in config.json with nothing left in the app able to show or run them.
+
+        Emptied afterwards so a second load does not add them again, and
+        skipped for anything the list already holds, because a path is very
+        likely to have been in both places at once -- which is why the slots
+        were redundant in the first place.
+        """
+        slots = self.data.get("paths")
+        if not isinstance(slots, list) or not any(
+            isinstance(s, str) and s.strip() for s in slots
+        ):
+            return
+        links = self.data.setdefault("links", [])
+        known = {
+            (link.get("url") or "").strip().lower()
+            for link in links
+            if isinstance(link, dict)
+        }
+        for slot in slots:
+            target = (slot or "").strip() if isinstance(slot, str) else ""
+            if not target or target.lower() in known:
+                continue
+            # Named after the file, which is what the shortcut list shows on
+            # its button -- the slots themselves had no name to carry over.
+            links.append({"name": Path(target).name or target, "url": target})
+            known.add(target.lower())
+        self.data["paths"] = ["", "", "", "", ""]
+
     def _migrate(self) -> None:
         """Fold settings from older layouts into their current homes.
 
@@ -337,6 +372,7 @@ class Config:
         through import_from() or be hand-edited between runs.
         """
         misc = self.data["misc"]
+        self._migrate_paths_to_links()
 
         # Single 연속사용키 -> the five-slot list.
         slots = misc.get("ckeys") or []

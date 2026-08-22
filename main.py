@@ -118,10 +118,19 @@ def main() -> None:
     # restart_app is deliberately not bound to a key any more -- it is a
     # button in the bottom bar (see gui/app.py _build_bottom_bar).
 
-    def send_chat_macro(text: str) -> None:
+    def send_chat_macro(text: str, chat: bool = True) -> None:
+        """Fire a saved phrase, the way that phrase says it wants to be fired.
+
+        ``chat`` is the row's 채팅 tick: through the game's chat box (open,
+        paste, Enter) when set, and a plain paste into whatever field the
+        caret is in when not.
+        """
         from poehelper import input_io
 
-        input_io.send_chat_message(text)
+        if chat:
+            input_io.send_chat_message(text)
+        else:
+            input_io.paste_text(text)
 
     hotkey_manager.set_handler("__send_chat_macro__", send_chat_macro)
     # Same shape as the chat macros: one config row per binding, so the

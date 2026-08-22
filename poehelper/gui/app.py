@@ -277,7 +277,7 @@ class App(ctk.CTk):
             "채팅 매크로": self._build_macro_tab,
             "물약": self._build_flask_tab,
             "게임 단축키": self._build_hotkeys_tab,
-            "링크": self._build_links_tab,
+            "바로가기": self._build_links_tab,
             "정규식": self._build_regex_tab,
             "메모": self._build_memo_tab,
             "레벨업": self._build_levelup_tab,
@@ -953,7 +953,7 @@ class App(ctk.CTk):
         self.config.data["misc"]["ckey_delay_ms"] = delay_ms
         self.config.save()
 
-    # ---- tab: 링크 --------------------------------------------------------
+    # ---- tab: 바로가기 --------------------------------------------------------
     def _build_links_tab(self, tab: ctk.CTkFrame) -> None:
         self._build_save_row(tab)
 
@@ -967,7 +967,7 @@ class App(ctk.CTk):
     def refresh_links(self) -> None:
         """Called after the memo window adds a favorite link, so the links
         tab reflects it without needing a manual reopen."""
-        if "링크" not in self._built_tabs:
+        if "바로가기" not in self._built_tabs:
             # Not built yet -- it will read the (already saved) links from
             # config when it is first opened, so there is nothing to sync.
             return
@@ -1198,30 +1198,14 @@ class App(ctk.CTk):
             scroll, "POE2 실행", "poe2_launch_url", pady=(0, 4)
         )
 
-        self.path_vars: list[ctk.StringVar] = []
-        paths_cfg = self.config.data["paths"]
-        for i in range(5):
-            row = ctk.CTkFrame(scroll, fg_color="transparent")
-            row.pack(fill="x", pady=2)
-            var = ctk.StringVar(value=paths_cfg[i] if i < len(paths_cfg) else "")
-            ctk.CTkEntry(row, textvariable=var, width=260, placeholder_text=f"프로그램 #{i+1} 경로").pack(
-                side="left", padx=(0, 4)
-            )
-            ctk.CTkButton(row, text="찾아보기", width=70, command=lambda v=var: self._browse_path(v)).pack(
-                side="left", padx=2
-            )
-            ctk.CTkButton(row, text="실행", width=50, command=lambda v=var: self.actions.launch_path(v.get())).pack(
-                side="left", padx=2
-            )
-            var.trace_add("write", lambda *_: self._save_paths())
-            self.path_vars.append(var)
-
         ctk.CTkLabel(
             scroll,
             text=(
-                "exe 파일, 바로가기(.lnk), 배치 파일 모두 지정할 수 있습니다. "
-                "프로그램은 지정한 파일이 있는 폴더에서 실행되므로, 게임/런처를 exe로 "
-                "직접 지정해도 자기 파일을 찾지 못해 바로 꺼지는 일이 없습니다."
+                "두 주소는 창 아래쪽 POE1 / POE2 버튼에도 연결되어 있어, 설정 탭을 "
+                "열지 않고도 바로 실행할 수 있습니다.\n"
+                "그 밖의 프로그램·폴더·사이트는 '바로가기' 탭에서 관리합니다. "
+                "exe, 바로가기(.lnk), 배치 파일 모두 지정할 수 있고, 지정한 파일이 있는 "
+                "폴더에서 실행되므로 프로그램이 자기 파일을 찾지 못해 꺼지는 일이 없습니다."
             ),
             anchor="w", justify="left", font=theme.FONT_CAPTION,
             text_color=theme.PRIMARY, wraplength=660,
@@ -1945,25 +1929,21 @@ class App(ctk.CTk):
         ).pack(side="left")
         return var
 
+    def _launch_configured(self, config_key: str) -> None:
+        """Run whatever ``misc[config_key]`` points at.
+
+        Read at press time rather than captured when the button was built,
+        so editing the address in the settings tab takes effect without
+        rebuilding the bottom bar.
+        """
+        target = (self.config.data["misc"].get(config_key, "") or "").strip()
+        if not target:
+            toast.show("실행할 주소가 비어 있습니다.\n'기타 설정' 탭에서 먼저 지정해주세요.")
+            return
+        self.actions.launch_path(target)
+
     def _save_poe_url(self, config_key: str, var: ctk.StringVar) -> None:
         self.config.data["misc"][config_key] = var.get()
-        self.config.save()
-
-    def _browse_path(self, var: ctk.StringVar) -> None:
-        # Shortcuts first: picking the .lnk off the desktop is both the
-        # easiest thing to find and the one most likely to work, since it
-        # carries the launcher's own arguments and start-in folder.
-        chosen = filedialog.askopenfilename(
-            filetypes=[
-                ("실행 파일 / 바로가기", "*.exe;*.lnk;*.bat;*.cmd"),
-                ("모든 파일", "*.*"),
-            ]
-        )
-        if chosen:
-            var.set(chosen)
-
-    def _save_paths(self) -> None:
-        self.config.data["paths"] = [v.get() for v in self.path_vars]
         self.config.save()
 
     def _export_config(self) -> None:
@@ -2012,6 +1992,23 @@ class App(ctk.CTk):
         bar = ctk.CTkFrame(self, fg_color="transparent")
         bar.pack(fill="x", padx=8, pady=8)
         ctk.CTkButton(bar, text="트레이로 최소화", command=self._on_minimize).pack(side="left")
+
+        # The two games, next to the button that gets this window out of the
+        # way -- which is the order they are actually used in: start the
+        # game, then hide the helper. They were only reachable from inside
+        # the 기타 설정 tab before, which is two clicks away from a window
+        # whose whole job is to be dismissed.
+        for label, key in (("POE1", "poe_launch_url"), ("POE2", "poe2_launch_url")):
+            button = ctk.CTkButton(
+                bar, text=label, width=64,
+                command=lambda k=key: self._launch_configured(k),
+            )
+            button.pack(side="left", padx=(8, 0))
+            Tooltip(
+                button,
+                f"{label}을(를) 실행합니다.\n"
+                "실행할 주소나 파일은 '기타 설정' 탭의 프로그램/게임 실행에서 바꿀 수 있습니다.",
+            )
 
         ctk.CTkButton(
             bar, text="종료", width=90,

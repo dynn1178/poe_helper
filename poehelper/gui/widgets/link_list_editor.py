@@ -1,7 +1,7 @@
-"""CRUD editor for the quick-launch link buttons. Rows can hold a web URL,
-a local file, or a folder -- each row has its own "열기" button that opens
-the target immediately (browser for http(s) links, the file/folder's
-default handler otherwise via ``os.startfile``)."""
+"""CRUD editor for the quick-launch shortcut buttons. A row can hold a web
+URL, a local file, or a folder, and each one says which it is so a list of
+thirty is readable at a glance. Every row has its own "열기" button that
+opens the target immediately."""
 from __future__ import annotations
 
 import os
@@ -17,16 +17,68 @@ from .reorder import DragReorder
 from .tooltip import Tooltip
 
 
+# What a row points at. Read off the value rather than stored, so a row
+# edited from a URL into a folder path relabels itself as you type.
+KIND_SITE, KIND_FOLDER, KIND_FILE, KIND_MISSING = "site", "folder", "file", "missing"
+
+_KIND_LABEL = {
+    KIND_SITE: ("사이트", "#5b9bd5"),
+    KIND_FOLDER: ("폴더", "#e0a458"),
+    KIND_FILE: ("파일", "#7fb069"),
+    KIND_MISSING: ("없음", "#b0b0b4"),
+}
+
+
+def kind_of(value: str) -> str:
+    """Which of the three kinds this value is, or that it points nowhere.
+
+    A path that no longer exists is worth saying out loud: a shortcut to a
+    program that has since been moved or uninstalled otherwise looks exactly
+    like a working one until the day you press it.
+    """
+    value = (value or "").strip()
+    if not value:
+        return KIND_MISSING
+    if value.startswith(("http://", "https://")):
+        return KIND_SITE
+    path = Path(value)
+    if path.is_dir():
+        return KIND_FOLDER
+    if path.is_file():
+        return KIND_FILE
+    return KIND_MISSING
+
+
 def open_target(value: str) -> None:
+    """Open a URL, file or folder the way double-clicking it would.
+
+    The working directory matters and is the whole reason this does not
+    simply call ``os.startfile(value)``. Explorer runs a program *from its
+    own folder*; ``os.startfile`` hands the child whatever directory this
+    app happens to be running in. A program that looks for its own data
+    relative to the current directory then finds this app's folder instead,
+    and behaves as if half its files were missing.
+
+    That is not hypothetical. The Korean Path of Building launcher
+    (PoeCharm3) reads ``Data/Settings.conf`` and ``Data/Translate/ko-KR`` by
+    relative path and builds the path to its own ``Path of Building.exe`` the
+    same way. Started from here it opened, then died with an access violation
+    the moment its 작동 button was pressed -- while the identical exe
+    double-clicked in Explorer worked every time. ``hotkeys/actions.py``
+    already learned this lesson for the 실행 buttons; this is the same fix for
+    the shortcut list.
+    """
     value = (value or "").strip()
     if not value:
         return
-    if value.startswith("http://") or value.startswith("https://"):
+    if value.startswith(("http://", "https://")):
         webbrowser.open(value)
         return
     path = Path(value)
     if path.exists():
-        os.startfile(str(path))  # noqa: S606 -- Windows-only app, opens file/folder w/ default handler
+        directory = str(path.parent if path.is_file() else path)
+        # noqa: S606 -- Windows-only app, opens file/folder with its default handler
+        os.startfile(str(path), cwd=directory)
         return
     webbrowser.open(value)
 
@@ -87,6 +139,15 @@ class LinkListEditor(ctk.CTkFrame):
         # draggable by this grip.
         self._drag.handle(row, entry).pack(side="left", padx=(0, 2))
 
+        # What this row points at, in front of the name where it can be read
+        # straight down the column. Fixed width so the name fields stay in
+        # line whichever kind each row happens to be.
+        kind_label = ctk.CTkLabel(
+            row, text="", width=42, font=theme.FONT_CAPTION, anchor="w"
+        )
+        kind_label.pack(side="left", padx=(0, 4))
+        entry.append(kind_label)
+
         ctk.CTkEntry(row, textvariable=name_var, width=90, placeholder_text="이름").pack(
             side="left", padx=(0, 4)
         )
@@ -108,9 +169,22 @@ class LinkListEditor(ctk.CTkFrame):
         ).pack(side="left")
 
         self.rows.append(entry)
+        self._refresh_kind(entry)
         name_var.trace_add("write", lambda *_: self._notify())
-        url_var.trace_add("write", lambda *_: self._notify())
+        url_var.trace_add(
+            "write", lambda *_: (self._refresh_kind(entry), self._notify())
+        )
         self._notify()
+
+    def _refresh_kind(self, entry: list) -> None:
+        """Relabel a row as its value is edited.
+
+        Read from the value rather than remembered, so pasting a folder path
+        over a URL relabels the row without anything else having to be told.
+        """
+        _row, _name_var, url_var, label = entry[:4]
+        text, colour = _KIND_LABEL[kind_of(url_var.get())]
+        label.configure(text=text, text_color=colour)
 
     def _add_file(self) -> None:
         chosen = filedialog.askopenfilename()
@@ -141,7 +215,7 @@ class LinkListEditor(ctk.CTkFrame):
     def get_links(self) -> list[dict]:
         return [
             {"name": name_var.get(), "url": url_var.get()}
-            for (_row, name_var, url_var) in self.rows
+            for (_row, name_var, url_var, *_rest) in self.rows
             if name_var.get() or url_var.get()
         ]
 

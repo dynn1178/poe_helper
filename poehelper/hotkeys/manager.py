@@ -125,7 +125,13 @@ class HotkeyManager:
             fn = self._handlers.get("__send_chat_macro__")
             if fn:
                 text = macro.get("text", "")
-                b = self._build(f"macro_{i}", combo, lambda t=text: fn(t))
+                # Missing means True: every macro saved before the option
+                # existed went through the chat box, and an old config has to
+                # keep behaving the way it did.
+                chat = bool(macro.get("chat", True))
+                b = self._build(
+                    f"macro_{i}", combo, lambda t=text, c=chat: fn(t, c)
+                )
                 if b:
                     bindings.append(b)
 

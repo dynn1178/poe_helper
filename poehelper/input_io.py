@@ -140,3 +140,22 @@ def send_chat_message(text: str) -> None:
     open_chat_box()
     paste_into_chat(text)
     press("enter")  # submit
+
+
+def paste_text(text: str) -> None:
+    """Put *text* where the caret already is, without touching Enter at all.
+
+    The other half of what a saved phrase is used for. A stash tab's name, an
+    item-filter search box and a whisper you mean to edit before sending are
+    all ordinary text fields, and the chat sequence is wrong for every one of
+    them: the leading Enter either does nothing or commits the field, and the
+    trailing Enter sends something half-written.
+
+    The modifiers still get released first. This runs on the hotkey that
+    triggered it, which is usually still held, and Ctrl+V with Alt also down
+    is not a paste.
+    """
+    for mod in ("alt", "ctrl", "shift"):
+        key_up(mod)
+    time.sleep(0.03)
+    paste_into_chat(text)
