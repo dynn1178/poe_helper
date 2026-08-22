@@ -30,6 +30,14 @@ cache/
 *.bak
 *.bak-*
 
+# Awakened PoE Trade, unpacked next to this repo as a reference while the
+# price check was being rewritten. It is an installed Electron app -- a
+# 200 MB exe among 140-odd other files -- and GitHub rejects a push carrying
+# it. What this project actually needs from that project is the game data
+# under data/trade/, which tools/update_trade_data.py downloads from its
+# repository; the installed copy is not a dependency of anything here.
+Awakened PoE Trade/
+
 # OS / editor
 Thumbs.db
 desktop.ini

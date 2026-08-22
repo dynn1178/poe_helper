@@ -35,7 +35,7 @@ from datetime import datetime, timezone
 import customtkinter as ctk
 
 from ..config import Config
-from ..trade import query as querymod
+from ..trade import gamedata, query as querymod
 from ..trade.api import TradeError
 from ..trade.item import ItemMod, ParsedItem
 from . import theme
@@ -80,17 +80,39 @@ INDEXED_OPTIONS = [
     ("1week", "1주일 이내"), ("2weeks", "2주일 이내"), ("1month", "1달 이내"),
 ]
 
-# Item state the user may want pinned. Ids and labels come from the site's
-# misc_filters, so "삿된" is mutated because that is what the site calls it.
+# Item state the user may want pinned, by the id the site's misc_filters
+# gives it. More is offered here than any one realm carries -- the Korean
+# realm has no foulborn_item and still calls that mutated, while it does have
+# vestigial and memory_level -- so each is shown only once the realm has said
+# it exists. See TradeAPI.filter_allowed.
 TRISTATE_FILTERS = [
     ("corrupted", "타락"),
     ("mutated", "삿된"),
+    ("foulborn_item", "삿된"),
+    ("vestigial", "흔적"),
     ("fractured_item", "분열"),
     ("synthesised_item", "결합"),
+    ("searing_item", "총주교"),
+    ("tangled_item", "포식자"),
     ("mirrored", "복제"),
-    ("crucible_item", "시련"),
+    ("split", "분할"),
+    ("veiled", "장막"),
+    ("identified", "감정"),
 ]
 TRISTATE_CHOICES = [("", "모두"), ("true", "예"), ("false", "아니요")]
+
+# The numbers a weapon or a piece of armour is actually judged on. The site
+# filters on these directly rather than through a stat id, and leaving them
+# out priced a 600-dps sceptre against every sceptre ever listed.
+_WEAPON_BOXES = [("dps", "DPS"), ("pdps", "물리 DPS"), ("edps", "원소 DPS")]
+_ARMOUR_BOXES = [("ar", "방어도"), ("ev", "회피"), ("es", "에너지 보호막"), ("ward", "수호")]
+
+# The totals ticked when the window opens. Life and resistances are what a
+# rare is priced on nine times out of ten; the rest are there to be ticked
+# when they happen to be the point of the item.
+_TOTALS_ON = frozenset(
+    {"pseudo.pseudo_total_life", "pseudo.pseudo_total_elemental_resistance"}
+)
 
 SORT_OPTIONS = [("indexed", "최근 등록순"), ("price", "가격 낮은순")]
 
@@ -153,41 +175,69 @@ def _point_is_ours(x: int, y: int) -> bool:
         return True
 
 
-class _ModRow:
-    """One mod: whether it is searched, and over what range.
+class _Row:
+    """One searchable thing: whether it is searched, and over what range.
 
-    The lower bound starts at the value on the item, so the opening search is
-    "this or better". The upper box starts empty: capping it at your own roll
-    would hide every item better than yours, which is usually the thing you
-    most want the price of.
+    Two kinds of thing end up here and they behave identically once built: a
+    line printed on the item, and a *total* the site indexes but the game
+    never prints -- how much life all the item's mods add up to, say. Both
+    are a stat id, a number the item currently has, and two boxes.
+
+    Which box is filled depends on which direction is better. For an ordinary
+    mod the lower bound starts at the value on the item, so the opening
+    search is "this or better", and the upper box stays empty: capping it at
+    your own roll would hide every item better than yours, which is usually
+    the thing you most want the price of. For a mod where a *smaller* number
+    is better -- "받는 원소 피해 8% 감소" -- the two swap over, which is what
+    the game's own data is asked about rather than guessed from the sign.
     """
 
-    def __init__(self, mod: ItemMod, checked: bool, current: float | None):
+    def __init__(
+        self,
+        label: str,
+        checked: bool,
+        current: float | None,
+        best: float | None,
+        *,
+        mod: ItemMod | None = None,
+        ids: list[str] | None = None,
+        minimum: float | None = None,
+        maximum: float | None = None,
+        tier: int | None = None,
+        quality: float | None = None,
+        kind: str = "",
+    ):
+        self.label = label
         self.mod = mod
+        self.ids = ids or []
         self.current = current
-        self.initial_checked = checked
+        self.best = best
+        self.tier = tier
+        self.quality = quality
+        self.kind = kind
+        self.widget = None
+        self.initial = (checked, _fmt(minimum), _fmt(maximum))
         self.enabled = ctk.BooleanVar(value=checked)
-        self.minimum = ctk.StringVar(value=_fmt(current))
-        self.maximum = ctk.StringVar(value="")
+        self.minimum = ctk.StringVar(value=_fmt(minimum))
+        self.maximum = ctk.StringVar(value=_fmt(maximum))
 
     @property
-    def span(self) -> float | None:
-        """The best this mod can roll, averaged over its numbers."""
-        if not self.mod.ranges:
-            return None
-        highs = [high for _low, high in self.mod.ranges]
-        return sum(highs) / len(highs)
+    def searchable(self) -> bool:
+        return bool(self.ids or (self.mod is not None and self.mod.ids))
+
+    @property
+    def numeric(self) -> bool:
+        return self.current is not None
 
     def nudge(self, direction: int) -> bool:
         """Move both bounds by 5% of the achievable maximum.
 
-        Returns whether anything moved, so the window can say when a mod was
+        Returns whether anything moved, so the window can say when a row was
         skipped for having no printed range.
         """
-        span = self.span
-        if span is None:
+        if self.best is None:
             return False
-        delta = span * _RANGE_STEP * direction
+        delta = self.best * _RANGE_STEP * direction
         moved = False
         for var in (self.minimum, self.maximum):
             value = _parse_number(var.get())
@@ -198,17 +248,48 @@ class _ModRow:
         return moved
 
     def reset(self) -> None:
-        """Back to how the window opened -- ticked as it was, bounds at the
-        roll on the item, no upper limit."""
-        self.enabled.set(self.initial_checked)
-        self.minimum.set(_fmt(self.current))
-        self.maximum.set("")
+        """Back to how the window opened."""
+        checked, minimum, maximum = self.initial
+        self.enabled.set(checked)
+        self.minimum.set(minimum)
+        self.maximum.set(maximum)
 
     def selection(self) -> querymod.Selection | None:
-        if not self.enabled.get():
+        if not self.enabled.get() or not self.searchable:
             return None
         return querymod.Selection(
-            self.mod, _parse_number(self.minimum.get()), _parse_number(self.maximum.get())
+            mod=self.mod,
+            minimum=_parse_number(self.minimum.get()),
+            maximum=_parse_number(self.maximum.get()),
+            ids=list(self.ids),
+        )
+
+    @classmethod
+    def for_mod(cls, mod: ItemMod, checked: bool) -> "_Row":
+        minimum, maximum = querymod.bound_for(mod) if checked else (None, None)
+        return cls(
+            label=mod.text.splitlines()[0],
+            checked=checked,
+            current=querymod.current_value(mod),
+            best=mod.best,
+            mod=mod,
+            minimum=minimum,
+            maximum=maximum,
+            tier=mod.tier,
+            quality=mod.quality,
+            kind=mod.kind,
+        )
+
+    @classmethod
+    def for_total(cls, total: querymod.PseudoFilter, checked: bool) -> "_Row":
+        return cls(
+            label=f"{total.label}  {_pretty(total.value)}",
+            checked=checked,
+            current=total.value,
+            best=total.value,
+            ids=[total.id],
+            minimum=float(int(total.value * 0.9)) if checked else None,
+            kind="pseudo",
         )
 
 
@@ -226,7 +307,12 @@ class PriceCheckWindow(ctk.CTkToplevel):
         self._closed = False
         self._answered = False
         self._status_option = "available"
-        self._rows: list[_ModRow] = []
+        self._rows: list[_Row] = []
+        self._currency: dict | None = None
+        # Whether the answer on screen came from the bulk exchange rather
+        # than from a search. The two have different pages on the site, so
+        # 거래소에서 열기 has to know which one to open.
+        self._exchange_result = False
         self._drag_origin: tuple[int, int] | None = None
         self._resize_origin: tuple[int, int, int, int] | None = None
         self._pending_move: tuple[int, int] | None = None
@@ -273,6 +359,10 @@ class PriceCheckWindow(ctk.CTkToplevel):
 
         if config.data.get("trade", {}).get("auto_search", True):
             self.after(80, self.search)
+        if any(not row.searchable for row in self._rows):
+            threading.Thread(
+                target=self._late_resolve, name="stat-fallback", daemon=True
+            ).start()
 
     @property
     def font_size(self) -> int:
@@ -338,7 +428,6 @@ class PriceCheckWindow(ctk.CTkToplevel):
                 for value, label in (
                     (self.item.physical_dps, "물리"),
                     (self.item.elemental_dps, "원소"),
-                    (self.item.chaos_dps, "카오스"),
                 )
                 if value
             ]
@@ -371,10 +460,34 @@ class PriceCheckWindow(ctk.CTkToplevel):
         box = ctk.CTkScrollableFrame(self.card, fg_color=theme.OVERLAY_SURFACE)
         box.pack(fill="both", expand=True, padx=12, pady=(0, 8))
 
-        # One row per *searchable* stat rather than per { ... } block: a single
-        # header can cover two stats the site indexes separately, and shown as
-        # one row they were one unusable filter with the second line hidden.
-        self.item.mods = querymod.expand_mods(self.api, self.item.mods)
+        # The totals first, because on a rare they are what the item is
+        # actually priced on: nobody buys a ring for its "+45 생명력 최대치"
+        # line, they buy it for the life and resistance it adds altogether.
+        # Ticked by default for the same reason, and the individual lines
+        # that feed them are then left unticked so the search is not asking
+        # for the same thing twice.
+        # An influenced base is worth a multiple of the same base without it,
+        # and the game announces it in a section of its own rather than as a
+        # line among the mods -- so it gets a row of its own, ticked, because
+        # an item without the influence is not the item being priced.
+        influences = querymod.influence_filters(self.item, gamedata.load())
+        if influences:
+            self._build_caption(box, "영향")
+            for label, ids in influences:
+                self._build_row(box, _Row(label, True, None, None, ids=ids))
+
+        totals = querymod.pseudo_filters(self.item)
+        covered: set[int] = set()
+        if totals:
+            self._build_caption(box, "합계 (거래소 유사 속성)")
+            for total in totals:
+                # A unique is identified by its name, so nothing needs to be
+                # ticked for the search to mean something; the totals are
+                # there for narrowing a well-rolled copy down by hand.
+                on = total.id in _TOTALS_ON and not self.item.priced_by_name
+                if on:
+                    covered.update(id(mod) for mod in total.sources)
+                self._build_row(box, _Row.for_total(total, on))
 
         # Best tier first, and the top three ticked. Tier is the game's own
         # verdict on how good a roll is -- T1 is the best band the mod has --
@@ -400,13 +513,24 @@ class PriceCheckWindow(ctk.CTkToplevel):
             # to tier so the window still opens with a real search.
             rollable = [m for m in ranked if m.kind in ("explicit", "fractured")]
             default_on = {id(m) for m in sorted(rollable, key=_tier_only)[:3]}
-        for mod in ranked:
-            self._build_mod_row(box, mod, id(mod) in default_on)
+        # A ticked total already asks for the lines that produced it, and
+        # asking again halves the results for nothing. Only *those* lines
+        # step aside, though: a wand's resistance total says nothing about
+        # its gem levels, and dropping every individual filter because one
+        # total was ticked left a weapon searched on resistance alone.
+        default_on -= covered
 
-    def _build_mod_row(self, parent, mod: ItemMod, checked: bool) -> None:
-        resolved = querymod.resolve(self.api, mod, self.item)
-        placeholders = resolved[1] if resolved else 0
-        row_data = _ModRow(mod, checked, querymod.current_value(mod, placeholders))
+        self._build_caption(box, "개별 속성")
+        for mod in ranked:
+            self._build_row(box, _Row.for_mod(mod, id(mod) in default_on))
+
+    def _build_caption(self, parent, text: str) -> None:
+        ctk.CTkLabel(
+            parent, text=text, font=self.font_small, anchor="w",
+            text_color=theme.OVERLAY_TEXT_DIM,
+        ).pack(fill="x", padx=2, pady=(6, 1))
+
+    def _build_row(self, parent, row_data: "_Row") -> None:
         self._rows.append(row_data)
 
         row = ctk.CTkFrame(parent, fg_color="transparent")
@@ -418,7 +542,7 @@ class PriceCheckWindow(ctk.CTkToplevel):
         # How well this line rolled, right next to the numbers it is about:
         # 38 in a 30-40 range is 80% of the way up its band, and that -- not
         # the raw 38 -- is what says whether the line is worth pricing on.
-        quality = mod.quality
+        quality = row_data.quality
         ctk.CTkLabel(
             row, text=f"{quality * 100:.0f}%" if quality is not None else "",
             font=self.font_small, width=38, anchor="e",
@@ -428,7 +552,6 @@ class PriceCheckWindow(ctk.CTkToplevel):
         # A mod with no number in it ("번개 피해만 줄 수 있음") has nothing to
         # bound, and an editable box there invites a value the site will
         # reject. Disabled rather than absent so the columns stay aligned.
-        numeric = row_data.current is not None or bool(mod.values)
         for var in (row_data.maximum, row_data.minimum):
             entry = ctk.CTkEntry(
                 row, textvariable=var, width=58, height=26, font=self.font_small,
@@ -436,72 +559,117 @@ class PriceCheckWindow(ctk.CTkToplevel):
                 border_color=theme.OVERLAY_BORDER, text_color=theme.OVERLAY_TEXT,
             )
             entry.pack(side="right", padx=(3, 0))
-            if numeric:
+            if row_data.numeric:
                 entry.bind("<Return>", lambda _e: self.search())
             else:
                 entry.configure(state="disabled", fg_color=theme.OVERLAY_BG)
 
         # Tier in front, where it can be read straight down the column,
         # rather than trailing the mod text at a different offset every row.
-        tier = f"T{mod.tier}" if mod.tier else ("고정" if mod.kind == "implicit" else "")
+        tier = f"T{row_data.tier}" if row_data.tier else (
+            "고정" if row_data.kind == "implicit" else ""
+        )
         ctk.CTkLabel(
             row, text=tier, font=self.font_small, width=34, anchor="w",
-            text_color=_tier_colour(mod.tier),
+            text_color=_tier_colour(row_data.tier),
         ).pack(side="left", padx=(4, 2))
 
-        note = _KIND_LABEL.get(mod.kind, "")
-        label = mod.text.splitlines()[0] + (f"  [{note}]" if note else "")
-        ctk.CTkCheckBox(
+        note = _KIND_LABEL.get(row_data.kind, "")
+        label = row_data.label + (f"  [{note}]" if note else "")
+        box = ctk.CTkCheckBox(
             row, text=label, variable=row_data.enabled,
             font=self.font_small, checkbox_width=16, checkbox_height=16,
             fg_color=theme.OVERLAY_ACCENT, hover_color=theme.OVERLAY_ACCENT_HOVER,
             border_color=theme.OVERLAY_BORDER, text_color=theme.OVERLAY_TEXT,
             checkmark_color=theme.OVERLAY_TEXT,
-        ).pack(side="left", fill="x", expand=True)
+        )
+        box.pack(side="left", fill="x", expand=True)
+        # Kept so _late_resolve can enable a row whose stat the site turned
+        # out to know after all.
+        row_data.widget = box
+        if not row_data.searchable:
+            # The game printed a line this build's data does not know. Shown,
+            # because the item has it and hiding it would make the window
+            # disagree with the game; not tickable, because there is no id to
+            # search it under.
+            box.configure(state="disabled", text_color=theme.OVERLAY_TEXT_DIM)
 
     def _build_filters(self) -> None:
-        """Item state and listing age, chosen rather than inferred."""
+        """Item state, size and listing age -- chosen rather than inferred.
+
+        What counts as "the same item" is a judgement, not a fact: whether a
+        buyer cares that this one is corrupted, or would take one with 40
+        less armour, depends on why they are pricing it. So the window seeds
+        every box from the item and then gets out of the way.
+        """
         self.filter_vars: dict[str, ctk.StringVar] = {}
         self.num_vars: dict[str, ctk.StringVar] = {}
+        self.group_of: dict[str, str] = {}
         wrap = ctk.CTkFrame(self.card, fg_color="transparent")
         wrap.pack(fill="x", padx=12, pady=(0, 4))
 
-        # grid, not pack: six dropdowns and their labels do not fit one row at
+        # grid, not pack: the dropdowns and their labels do not fit one row at
         # this width, and pack answered that by silently shaving the labels
         # off until every control read "모두" with no way to tell which was
         # which. A grid wraps them onto rows instead of hiding them.
         for column in range(3):
             wrap.grid_columnconfigure(column * 2 + 1, weight=1)
 
+        boxes: list[tuple[str, str, str, str]] = [
+            ("socket_filters", "links", "링크",
+             str(self.item.links) if self.item.links >= 5 else ""),
+            ("misc_filters", "quality", "퀄리티",
+             str(self.item.quality) if self.item.quality else ""),
+            ("misc_filters", "ilvl", "아이템 레벨", ""),
+        ]
+        if self.item.gem_level:
+            boxes.append(("misc_filters", "gem_level", "젬 레벨", str(self.item.gem_level)))
+        # The numbers under a weapon's or a piece of armour's name, seeded ten
+        # percent under what this one has so a comparable item is not excluded
+        # by a point or two.
+        suggested = querymod.property_filters(self.item)
+        for group, entries in (("weapon_filters", _WEAPON_BOXES), ("armour_filters", _ARMOUR_BOXES)):
+            for key, label in entries:
+                value = suggested.get(group, {}).get(key)
+                if value is not None and self.api.filter_allowed(group, key):
+                    boxes.append((group, key, label, _pretty(value)))
+
         row = 0
-        for index, (key, label, initial) in enumerate((
-            ("links", "링크", str(self.item.links) if self.item.links >= 5 else ""),
-            ("quality", "퀄리티", str(self.item.quality) if self.item.quality else ""),
-            ("ilvl", "아이템 레벨", ""),
-        )):
+        for index, (group, key, label, initial) in enumerate(boxes):
+            row = index // 3
             var = ctk.StringVar(value=initial)
-            self._cell(wrap, row, index, label)
+            self._cell(wrap, row, index % 3, label)
             ctk.CTkEntry(
                 wrap, textvariable=var, width=64, height=26, font=self.font_small,
                 justify="center", fg_color=theme.OVERLAY_SURFACE_2,
                 border_color=theme.OVERLAY_BORDER, text_color=theme.OVERLAY_TEXT,
                 placeholder_text="이상",
-            ).grid(row=row, column=index * 2 + 1, sticky="w", pady=2)
+            ).grid(row=row, column=(index % 3) * 2 + 1, sticky="w", pady=2)
             self.num_vars[key] = var
+            self.group_of[key] = group
 
-        for index, (key, label) in enumerate(TRISTATE_FILTERS):
-            row = 1 + index // 3
+        # Only the states this realm actually publishes. Sending one it does
+        # not know rejects the whole search with HTTP 400, and the Korean
+        # realm does not carry the same set as the international one.
+        offered = [
+            (key, label) for key, label in TRISTATE_FILTERS
+            if self.api.filter_allowed("misc_filters", key)
+        ]
+        first = row + 1
+        for index, (key, label) in enumerate(offered):
             initial = "true" if key in self.item.flags else ""
             self.filter_vars[key] = self._option(
-                wrap, row, index % 3, label, TRISTATE_CHOICES, initial, 82
+                wrap, first + index // 3, index % 3, label,
+                TRISTATE_CHOICES, initial, 82,
             )
 
+        last = first + (len(offered) + 2) // 3
         trade = self.app_config.data.get("trade", {})
         self.status_var = self._option(
-            wrap, 3, 0, "거래", STATUS_OPTIONS, trade.get("status", "available"), 176
+            wrap, last, 0, "거래", STATUS_OPTIONS, trade.get("status", "available"), 176
         )
         self.indexed_var = self._option(
-            wrap, 3, 2, "등록", INDEXED_OPTIONS, trade.get("indexed", "1week"), 110
+            wrap, last, 2, "등록", INDEXED_OPTIONS, trade.get("indexed", "1week"), 110
         )
         # Taken after every widget exists, so 초기화 restores exactly what the
         # window opened with rather than a second copy of the defaults.
@@ -637,50 +805,72 @@ class PriceCheckWindow(ctk.CTkToplevel):
             self._set_status(f"{moved}개 속성 범위를 조정했습니다. '다시 검색'을 눌러주세요.")
 
     def _extra_filters(self) -> dict:
-        socket, misc, trade = {}, {}, {}
+        """The boxes and dropdowns, grouped the way the site expects them.
+
+        Which group each box belongs to was decided when it was built (see
+        _build_filters), because that is where it was also decided whether
+        this realm offers it at all.
+        """
+        groups: dict[str, dict] = {}
         for key, var in self.num_vars.items():
             value = _parse_number(var.get())
-            if value is not None:
-                # Links, quality and item level are counts, and the site
-                # rejects the query outright for a float ("Link min must be
-                # an integer") rather than rounding it itself.
-                (socket if key == "links" else misc)[key] = {"min": int(value)}
+            if value is None:
+                continue
+            group = self.group_of.get(key, "misc_filters")
+            # Links, quality, item level and gem level are counts, and the
+            # site rejects the query outright for a float ("Link min must be
+            # an integer") rather than rounding it itself. DPS and defences
+            # are not counts and keep their decimals.
+            number = value if group in ("weapon_filters", "armour_filters") else int(value)
+            groups.setdefault(group, {})[key] = {"min": number}
         for key, var in self.filter_vars.items():
             chosen = _chosen(var)
             if chosen:
-                misc[key] = {"option": chosen}
+                groups.setdefault("misc_filters", {})[key] = {"option": chosen}
         indexed = _chosen(self.indexed_var)
         if indexed:
-            trade["indexed"] = {"option": indexed}
+            groups.setdefault("trade_filters", {})["indexed"] = {"option": indexed}
         self._status_option = _chosen(self.status_var) or "available"
-
-        out: dict[str, dict] = {}
-        if socket:
-            out["socket_filters"] = socket
-        if misc:
-            out["misc_filters"] = misc
-        if trade:
-            out["trade_filters"] = trade
-        return out
+        return groups
 
     def search(self) -> None:
         if self._busy or self._closed:
             return
-        extra = self._extra_filters()
         self._busy = True
         self.search_button.configure(state="disabled")
         self._set_status("거래소에서 찾는 중…")
-        payload = querymod.build(
-            self.api, self.item, self.selections(),
-            extra_filters=extra, sort=self._sort(),
-        )
-        payload["query"]["status"] = {"option": self._status_option}
+
+        if self._exchange_tag:
+            # Bulk goods are not sold as listings of one item, so a search
+            # for them finds only the few people who happened to list a
+            # single one. The site has an endpoint for the exchange itself.
+            worker, args = self._exchange_worker, (self._exchange_tag,)
+        else:
+            extra = self._extra_filters()
+            payload = querymod.build(
+                self.api, self.item, self.selections(),
+                extra_filters=extra, sort=self._sort(),
+            )
+            payload["query"]["status"] = {"option": self._status_option}
+            worker, args = self._search_worker, (payload,)
         # Off the Tk loop: a search is two round trips plus whatever the rate
         # limiter decides to wait, and doing that in a button callback would
         # freeze every window this app owns.
         threading.Thread(
-            target=self._search_worker, args=(payload,), name="price-check", daemon=True
+            target=worker, args=args, name="price-check", daemon=True
         ).start()
+
+    @property
+    def _exchange_tag(self) -> str:
+        """The bulk-exchange id for this item, if it is priced by the pile.
+
+        Only when the user has not asked for something else: a chaos orb with
+        a mod ticked is not a question the exchange can answer, and neither
+        is one where they have set a corruption filter.
+        """
+        if not self.app_config.data.get("trade", {}).get("bulk_exchange", True):
+            return ""
+        return self.item.exchange_tag
 
     def _search_worker(self, payload: dict) -> None:
         try:
@@ -696,6 +886,20 @@ class PriceCheckWindow(ctk.CTkToplevel):
             self._marshal(self._show_error, "가격 확인 중 오류가 발생했습니다. 로그를 확인해주세요.")
         else:
             self._marshal(self._show_results, result, listings)
+
+    def _exchange_worker(self, tag: str) -> None:
+        try:
+            result = self.api.exchange(tag)
+        except TradeError as exc:
+            self._marshal(self._show_error, str(exc))
+        except Exception:
+            logger.exception("bulk exchange failed")
+            self._marshal(self._show_error, "대량 거래 조회 중 오류가 발생했습니다.")
+        else:
+            count = int(self.app_config.data.get("trade", {}).get("result_count", 10))
+            self._marshal(
+                self._show_exchange, result, result["listings"][:count]
+            )
 
     def _marshal(self, fn, *args) -> None:
         try:
@@ -742,7 +946,7 @@ class PriceCheckWindow(ctk.CTkToplevel):
         if prices:
             currency = max(prices, key=lambda c: len(prices[c]))
             values = sorted(prices[currency])
-            name = querymod.CURRENCY_NAMES.get(currency, currency)
+            name = querymod.currency_name(currency, self._currency_names())
             summary += f"   ·   최저 {_pretty(values[0])} {name}"
             if len(values) > 2:
                 summary += f"   ·   중앙값 {_pretty(values[len(values) // 2])} {name}"
@@ -758,7 +962,8 @@ class PriceCheckWindow(ctk.CTkToplevel):
         row = ctk.CTkFrame(self.results, fg_color="transparent")
         row.pack(fill="x", pady=2)
         ctk.CTkLabel(
-            row, text=querymod.summarise_price(entry), font=self.font, width=126, anchor="w",
+            row, text=querymod.summarise_price(entry, self._currency_names()),
+            font=self.font, width=126, anchor="w",
             text_color="#ffd75e",
         ).pack(side="left", padx=(6, 8))
         # When it was listed, not what it is called: every result is the same
@@ -767,6 +972,107 @@ class PriceCheckWindow(ctk.CTkToplevel):
         ctk.CTkLabel(
             row, text=_listed_ago((entry.get("listing") or {}).get("indexed", "")),
             font=self.font_small, anchor="e", width=82, text_color=theme.OVERLAY_TEXT_DIM,
+        ).pack(side="right", padx=(6, 8))
+        ctk.CTkLabel(
+            row, text=querymod.seller_of(entry), font=self.font_small, anchor="w",
+            text_color=theme.OVERLAY_TEXT,
+        ).pack(side="left", fill="x", expand=True)
+
+    def _late_resolve(self) -> None:
+        """Ask the trade site about lines the bundled game data did not know.
+
+        The data files are a snapshot, and a league can add modifiers before
+        a new one is downloaded. When that happens the line is shown greyed
+        out and unusable -- correct, but not helpful -- so this asks the site
+        whether it has heard of it, and enables the row if so.
+
+        On a thread, and after the window is already up, because the first
+        such question downloads the site's whole stat table. The window is
+        useful long before this finishes, and usually it never runs at all.
+        """
+        found = []
+        for row in self._rows:
+            if row.searchable or row.mod is None:
+                continue
+            try:
+                ids = self.api.find_stat_ids(row.mod.text, row.mod.kind)
+            except Exception:
+                logger.debug("fallback stat lookup failed", exc_info=True)
+                return
+            if ids:
+                found.append((row, ids))
+        if found:
+            self._marshal(self._apply_late_resolve, found)
+
+    def _apply_late_resolve(self, found: list) -> None:
+        for row, ids in found:
+            row.ids = ids
+            if row.widget is not None:
+                row.widget.configure(state="normal", text_color=theme.OVERLAY_TEXT)
+        logger.info("%d개 속성을 거래소 목록에서 뒤늦게 찾았습니다", len(found))
+        self._set_status(
+            f"{len(found)}개 속성을 거래소에서 추가로 인식했습니다. "
+            "게임 데이터를 갱신하면 더 정확해집니다."
+        )
+
+    def _currency_names(self) -> dict:
+        """The site's own localised currency names, fetched once.
+
+        Falls back to the short hand-written table in query.py when the call
+        fails; a price is still readable as "420 chaos".
+        """
+        if self._currency is None:
+            try:
+                self._currency = self.api.currency_names()
+            except Exception:
+                logger.debug("currency names unavailable", exc_info=True)
+                self._currency = {}
+        return self._currency
+
+    def _show_exchange(self, result: dict, listings: list[dict]) -> None:
+        """What a pile of this trades for, rather than what one is listed at.
+
+        The exchange answers in rates -- "3 of these for 1 divine" -- so each
+        row says how many of the item one unit of the other currency buys,
+        and the summary is the going rate rather than the cheapest listing.
+        """
+        self._done()
+        self._search_id = result["id"]
+        self.browser_button.configure(state="normal" if self._search_id else "disabled")
+        self._exchange_result = True
+        for child in self.results.winfo_children():
+            child.destroy()
+
+        rates = [rate for rate in map(_exchange_rate, listings) if rate is not None]
+        if not rates:
+            self._set_status("대량 거래 매물이 없습니다.", danger=True)
+            return
+        ordered = sorted(rates)
+        name = querymod.currency_name("chaos", self._currency_names())
+        summary = (
+            f"대량 거래 {result['total']}건"
+            f"   ·   최저 {_pretty(ordered[0])} {name}"
+        )
+        if len(ordered) > 2:
+            summary += f"   ·   중앙값 {_pretty(ordered[len(ordered) // 2])} {name}"
+        self._set_status(summary)
+
+        for entry in listings:
+            self._build_exchange_row(entry, name)
+
+    def _build_exchange_row(self, entry: dict, currency: str) -> None:
+        row = ctk.CTkFrame(self.results, fg_color="transparent")
+        row.pack(fill="x", pady=2)
+        rate = _exchange_rate(entry)
+        offer = (entry.get("listing") or {}).get("offers") or [{}]
+        stock = (offer[0].get("item") or {}).get("stock")
+        ctk.CTkLabel(
+            row, text=f"{_pretty(rate)} {currency}" if rate is not None else "-",
+            font=self.font, width=126, anchor="w", text_color="#ffd75e",
+        ).pack(side="left", padx=(6, 8))
+        ctk.CTkLabel(
+            row, text=f"재고 {stock}" if stock else "", font=self.font_small,
+            anchor="e", width=82, text_color=theme.OVERLAY_TEXT_DIM,
         ).pack(side="right", padx=(6, 8))
         ctk.CTkLabel(
             row, text=querymod.seller_of(entry), font=self.font_small, anchor="w",
@@ -891,8 +1197,14 @@ class PriceCheckWindow(ctk.CTkToplevel):
         return _point_is_ours(x, y)
 
     def _open_browser(self) -> None:
-        if self._search_id:
-            webbrowser.open(self.api.search_url(self._search_id))
+        if not self._search_id:
+            return
+        url = (
+            self.api.exchange_url(self._search_id)
+            if self._exchange_result
+            else self.api.search_url(self._search_id)
+        )
+        webbrowser.open(url)
 
     def _on_configure(self, event: tk.Event) -> None:
         # Only the window's own geometry is worth recording. Every child
@@ -985,6 +1297,26 @@ def _chosen(var: ctk.StringVar) -> str:
 
 def _currency(entry: dict) -> str:
     return ((entry.get("listing") or {}).get("price") or {}).get("currency", "")
+
+
+def _exchange_rate(entry: dict) -> float | None:
+    """How much of the offered currency one of this item costs.
+
+    The exchange quotes a ratio -- "150 chaos for 50 of these" -- rather than
+    a price, so it has to be divided out before two offers can be compared.
+    """
+    offers = (entry.get("listing") or {}).get("offers") or []
+    if not offers:
+        return None
+    exchange = offers[0].get("exchange") or {}
+    item = offers[0].get("item") or {}
+    try:
+        wanted, given = float(exchange.get("amount")), float(item.get("amount"))
+    except (TypeError, ValueError):
+        return None
+    if not given:
+        return None
+    return round(wanted / given, 3)
 
 
 def _amount(entry: dict) -> float | None:

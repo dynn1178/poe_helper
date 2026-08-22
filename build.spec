@@ -27,6 +27,17 @@ datas += [
     for path in sorted(Path("data").iterdir())
     if path.is_file() and ".bak" not in path.name
 ]
+
+# The game's own modifier/base-type data, one folder per language. Named as
+# folders rather than file by file because there is nothing else in them and
+# the price check cannot read a single item without all three files -- see
+# poehelper/trade/gamedata.py.
+datas += [
+    (str(path), f"data/trade/{path.name}")
+    for path in sorted((Path("data") / "trade").iterdir())
+    if path.is_dir()
+]
+datas += [(str(Path("data") / "trade" / "SOURCE.json"), "data/trade")]
 datas += collect_data_files("customtkinter")  # bundles its theme JSON files
 
 a = Analysis(

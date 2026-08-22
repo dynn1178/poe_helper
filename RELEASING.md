@@ -37,6 +37,23 @@ pip install -r requirements.txt
 
 ## 배포하기
 
+### 리그가 바뀐 뒤라면 먼저
+
+가격 확인이 쓰는 게임 데이터(모든 수식어와 기본 아이템 목록)를 갱신합니다.
+새 리그가 추가한 수식어는 이걸 하기 전까지 검색에 걸리지 않습니다.
+
+```
+python tools/update_trade_data.py
+python tools/check_trade_parser.py     # 검색 불가 속성 0건인지
+python tools/check_trade_search.py     # 실제 거래소가 받아주는지 (요청 몇 건 나감)
+```
+
+바뀐 `data/trade/ko/*.ndjson`을 커밋한 뒤 아래로 진행하세요. 실행 중인 프로그램도
+주 1회 스스로 갱신하지만(`설정 > trade.auto_update_data`), 빌드에 최신본을 넣어두면
+새로 설치한 사람이 처음부터 정확하게 조회할 수 있습니다.
+
+### 그다음
+
 **`release.bat`을 더블클릭하면 됩니다.** 버전과 업데이트 내용을 물어본 뒤 나머지를 알아서 합니다.
 
 ```

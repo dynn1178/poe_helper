@@ -28,118 +28,94 @@ The Korean client's format, confirmed against real items::
     --------
     { 접두어 속성 부여 "엄벌가의" (등급: 1) — 소환수, 젬 }
     모든 소환수 스킬 젬 레벨 +1
-    { 대가의 제작 접미어 속성 부여 "- 제작" — 시전, 젬 }
-    스킬 사용 시 장착된 주문 발동, 재사용 대기시간 8초
-    이렇게 발동된 주문의 비용 150% 증폭
     --------
     분열된 아이템
 
+Every label in that -- "아이템 희귀도: ", "타락", the shape of a ``{ ... }``
+header -- comes from :mod:`gamedata`'s client-strings file rather than from a
+list written out here. That file is generated from the game's own data, so a
+label the client changes is one download away from being right again, and the
+same parser reads an English client by loading a different one.
+
 The ``{ ... }`` headers appear only when *advanced mod descriptions* are
-switched on in the game's UI options, and they are worth a great deal here:
-they say where each mod block starts (so a two-line mod can be told from two
+switched on in the game's UI options, and they are worth a great deal: they
+say where each mod block starts (so a two-line mod can be told from two
 one-line mods), whether it is a prefix, a suffix, an implicit or crafted, and
 at which tier it rolled. Without them the item is still parsed -- every line
-simply becomes its own explicit mod, which is what a price check can work
-with -- but multi-line mods stop resolving. :attr:`ParsedItem.advanced` says
-which of the two happened so the UI can suggest turning the option on.
+becomes its own explicit mod, which a price check can work with -- but
+multi-line mods stop resolving. :attr:`ParsedItem.advanced` says which of the
+two happened so the UI can suggest turning the option on.
 
-English is accepted throughout as a fallback so the international client is
-not locked out.
+Each modifier is resolved against the game's data *here*, while the item is
+being read, rather than later against the trade site's wording. That is what
+lets a line printed as 감소 be understood as a negative 증가, an implied
+100% roll be filled in, and a mod that is local to a weapon be told apart
+from the global one that reads identically. See :mod:`gamedata`.
 """
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass, field
 
+from . import gamedata
+from .gamedata import GameData, StatMatch
+
+logger = logging.getLogger(__name__)
+
 SEPARATOR = "--------"
+EM_DASH = "—"
 
-# Rarity, both clients. Everything not listed reads as 일반/Normal.
-RARITY = {
-    "일반": "normal", "마법": "magic", "희귀": "rare", "고유": "unique",
-    "화폐": "currency", "디바인 카드": "card", "젬": "gem",
-    "Normal": "normal", "Magic": "magic", "Rare": "rare", "Unique": "unique",
-    "Currency": "currency", "Divination Card": "card", "Gem": "gem",
-}
-
-_LABELS = {
-    "class": ("아이템 종류", "Item Class"),
-    "rarity": ("아이템 희귀도", "희귀도", "Rarity"),
-    "ilvl": ("아이템 레벨", "Item Level"),
-    "quality": ("퀄리티", "Quality"),
-    "sockets": ("홈", "Sockets"),
-    "requirements": ("요구사항", "Requirements"),
-    # Blocks that carry no search terms. "메모" is the price tag the player
-    # wrote on their own stash tab, and "중첩 개수" is how many are in the
-    # pile -- neither says anything about what the item is.
-    "note": ("메모", "Note"),
-    "stack": ("중첩 개수", "Stack Size"),
-    "gem_level": ("레벨", "Level"),
-    "physical": ("물리 피해", "Physical Damage"),
-    # The client normally prints one combined "원소 피해: 5-10, 12-30" line,
-    # but the per-element labels are accepted too so a build that splits
-    # them still contributes to elemental DPS rather than silently reading
-    # as zero.
-    "elemental": (
-        "원소 피해", "Elemental Damage",
-        "화염 피해", "냉기 피해", "번개 피해",
-        "Fire Damage", "Cold Damage", "Lightning Damage",
-    ),
-    "chaos": ("카오스 피해", "Chaos Damage"),
-    "aps": ("초당 공격 횟수", "Attacks per Second"),
-    "area_level": ("지역 레벨", "Area Level"),
-    # Not used as a number anywhere -- only as the answer to "is this a piece
-    # of armour?", which is what tells a local 방어도/회피 mod apart from the
-    # global one of the same wording. See query._local_fits.
-    "defence": (
-        "방어도", "회피", "에너지 보호막",
-        "Armour", "Evasion Rating", "Energy Shield",
-    ),
-}
-
-_FLAGS = {
-    "corrupted": ("타락", "Corrupted"),
-    "fractured_item": ("분열된 아이템", "Fractured Item"),
-    # The Korean client calls a synthesised item 결합된, and prints that
-    # same word into its base type as well ("결합된 토파즈 반지") -- which
-    # is what query._type_for has to undo before the site will accept it.
-    # The key is the site's own misc_filters id, so the window can tick
-    # the filter this flag stands for; "synthesised" matched nothing.
-    "synthesised_item": ("결합된 아이템", "합성된 아이템", "Synthesised Item"),
-    "mirrored": ("거울 복제됨", "Mirrored"),
-    "unidentified": ("미확인", "Unidentified"),
-    # Names taken from the trade site's own filter labels rather than
-    # guessed at -- see misc_filters in /api/trade/data/filters.
-    "mutated": ("삿된 아이템", "Mutated Item"),
-    "searing": ("작열의 총주교 아이템", "Searing Exarch Item"),
-    "tangled": ("세계 포식자 아이템", "Eater of Worlds Item"),
-}
-
-# The kind of affix a { ... } header describes. Order matters: a fractured or
-# crafted header also contains 접두어/접미어, so the specific words are tested
-# before the generic ones.
-_AFFIX_KINDS = (
-    ("fractured", ("분열된", "Fractured")),
-    ("crafted", ("제작", "Crafted", "Master Crafted")),
-    ("enchant", ("인챈트", "Enchant")),
-    ("implicit", ("고정", "Implicit")),
-    ("unique", ("고유", "Unique")),
-    ("prefix", ("접두어", "Prefix")),
-    ("suffix", ("접미어", "Suffix")),
+# The kinds of modifier the trade site indexes separately, and the client
+# strings whose presence in a { ... } header names each one. Order matters:
+# a crafted or fractured header contains 접두어/접미어 too, so the specific
+# wordings are tested before the generic ones.
+_HEADER_KINDS = (
+    ("crafted", ("CRAFTED_PREFIX", "CRAFTED_SUFFIX")),
+    ("fractured", ("FRACTURED_PREFIX", "FRACTURED_SUFFIX")),
+    ("veiled", ("VEILED_PREFIX", "VEILED_SUFFIX")),
+    ("implicit", ("CORRUPTED_IMPLICIT", "IMPLICIT_MODIFIER")),
+    ("explicit", ("PREFIX_MODIFIER", "SUFFIX_MODIFIER")),
 )
+_PREFIX_KEYS = ("CRAFTED_PREFIX", "FRACTURED_PREFIX", "VEILED_PREFIX", "PREFIX_MODIFIER")
+_SUFFIX_KEYS = ("CRAFTED_SUFFIX", "FRACTURED_SUFFIX", "VEILED_SUFFIX", "SUFFIX_MODIFIER")
 
-_MOD_HEADER_RE = re.compile(r"^\{\s*(?P<body>.+?)\s*\}$")
+# Rarities the site prices by identity rather than by rolls.
+_BY_NAME = frozenset({"unique", "currency", "card", "gem"})
+
+_BRACED_RE = re.compile(r"^\{\s*(?P<body>.*?)\s*\}$")
 # Reminder text: the game's own gloss on a keyword, printed under the mod it
 # belongs to and wrapped in parentheses from end to end --
 #     ("점화"는 지속 화염 피해를 주며 …)
-# No stat the trade site publishes has a line of that shape (checked against
-# all 18,180 of them), so the rule can be this blunt. Leaving them in glued
-# the gloss onto the mod above and made the mod unfindable -- which is what a
-# tincture, whose every line carries one, ran into.
-_REMINDER_RE = re.compile(r"^\(.*\)$")
-_TIER_RE = re.compile(r"(?:등급|Tier):\s*(\d+)")
-# "29(26-30)" -> rolled 29 out of 26..30. Bare numbers have no known range.
-_ROLL_RE = re.compile(r"(?P<value>[-+]?\d+(?:\.\d+)?)\((?P<lo>[-+]?[\d.]+)-(?P<hi>[-+]?[\d.]+)\)")
-_BARE_RE = re.compile(r"[-+]?\d+(?:\.\d+)?")
+# No stat the game publishes has a line of that shape, so the rule can be
+# this blunt. Leaving them in glued the gloss onto the mod above and made the
+# mod unfindable -- which is what a tincture, whose every line carries one,
+# ran into.
+_REMINDER_OPEN_RE = re.compile(r"^\s*[(（]")
+_REMINDER_CLOSE_RE = re.compile(r"[)）]\s*$")
+
+# "34-62", or several at once for elemental damage: "5-10, 12-30".
+_DAMAGE_RE = re.compile(r"(\d+(?:\.\d+)?)\s*-\s*(\d+(?:\.\d+)?)")
+_NUMBER_RE = re.compile(r"-?\d+(?:\.\d+)?")
+
+
+def _after(line: str, label) -> str | None:
+    """The value part of a ``라벨: 값`` line, or None if the label is absent."""
+    if not label or not isinstance(label, str):
+        return None
+    if line.startswith(label):
+        return line[len(label):].strip()
+    # The data file writes these labels with the trailing space included;
+    # some clients print the colon without one.
+    stripped = label.rstrip()
+    if stripped.endswith(":") and line.startswith(stripped):
+        return line[len(stripped):].strip()
+    return None
+
+
+def _first_int(text: str) -> int | None:
+    match = re.search(r"-?\d+", text or "")
+    return int(match.group()) if match else None
 
 
 @dataclass
@@ -150,17 +126,44 @@ class ItemMod:
     kind: str = "explicit"          # explicit / implicit / crafted / fractured / enchant
     affix: str = ""                 # prefix / suffix, when the game says so
     tier: int | None = None
+    rank: int | None = None         # eldritch implicits are ranked, not tiered
     values: list[float] = field(default_factory=list)
     ranges: list[tuple[float, float]] = field(default_factory=list)
+    # What the game's data says this line is. None means the line was read
+    # but not recognised -- it is still shown, it simply cannot be searched.
+    match: StatMatch | None = None
+    unscalable: bool = False
+
+    @property
+    def ids(self) -> list[str]:
+        """The trade stat ids to search this mod under."""
+        return list(self.match.ids) if self.match else []
+
+    @property
+    def better(self) -> int:
+        """1 when a higher roll is better, -1 when a lower one is, 0 neither.
+
+        This is what decides whether the search should bound the mod from
+        below or from above. "받는 피해 8% 감소" bounded from below asks for
+        items strictly *worse* than the one in hand.
+        """
+        return self.match.stat.better if self.match else 1
+
+    @property
+    def decimals(self) -> bool:
+        return bool(self.match and self.match.stat.dp)
 
     @property
     def value(self) -> float | None:
         """One number to filter on.
 
-        Averaged rather than "the first": a mod like "화염 피해 47~80 추가" is
-        two numbers, and searching on 47 alone would happily return items far
-        worse than the one in hand.
+        A two-number mod ("화염 피해 47~80 추가") is one filter over the
+        average -- searching on 47 alone would happily return items far worse
+        than the one in hand. Three or more numbers filter on the first,
+        which is what the site itself does.
         """
+        if self.match is not None:
+            return self.match.value
         if not self.values:
             return None
         return sum(self.values) / len(self.values)
@@ -182,23 +185,13 @@ class ItemMod:
                 scores.append(max(0.0, min(1.0, (value - low) / (high - low))))
         return sum(scores) / len(scores)
 
-    def split(self) -> list["ItemMod"]:
-        """This modifier as one :class:`ItemMod` per line.
-
-        One ``{ ... }`` header can cover several stats -- a tincture's implicit
-        is "점화 유발" *and* "점화의 피해 증가" under a single header -- and the
-        trade site indexes those as two separate ids. Splitting is not always
-        right, though: the crafted trigger mod is published as one two-line
-        stat. Only the site can say which, so this hands back the pieces and
-        :func:`query.expand_mods` decides.
-        """
-        lines = self.text.split("\n")
-        if len(lines) < 2:
-            return [self]
-        return [
-            ItemMod(text=line, kind=self.kind, affix=self.affix, tier=self.tier, **_rolls(line))
-            for line in lines
-        ]
+    @property
+    def best(self) -> float | None:
+        """The best this mod can roll, for deciding how far to widen a search."""
+        if not self.ranges:
+            return None
+        highs = [high for _low, high in self.ranges]
+        return sum(highs) / len(highs)
 
 
 @dataclass
@@ -207,31 +200,68 @@ class ParsedItem:
     item_class: str = ""
     name: str = ""          # rolled name, rare/unique only
     base: str = ""          # base type, what the site calls "type"
+    category: str = ""      # the game's own category, e.g. "Body Armour"
+    info: gamedata.ItemInfo | None = None
     item_level: int | None = None
     quality: int | None = None
     gem_level: int | None = None
+    stack_size: int | None = None
     physical_dps: float = 0.0
     elemental_dps: float = 0.0
-    chaos_dps: float = 0.0
+    attacks_per_second: float = 0.0
+    crit_chance: float = 0.0
+    armour: int = 0
+    evasion: int = 0
+    energy_shield: int = 0
+    ward: int = 0
+    block: int = 0
     area_level: int | None = None
-    has_defence: bool = False   # armour/evasion/ES printed in the properties
+    map_tier: int | None = None
+    memory_strands: int | None = None
     sockets: str = ""
     mods: list[ItemMod] = field(default_factory=list)
     flags: set[str] = field(default_factory=set)
+    influences: set[str] = field(default_factory=set)
     advanced: bool = False  # were { ... } headers present?
     raw: str = ""
+    unknown: list[str] = field(default_factory=list)  # lines nothing claimed
 
+    # ---- derived ----------------------------------------------------------
     @property
     def total_dps(self) -> float:
-        return self.physical_dps + self.elemental_dps + self.chaos_dps
+        """Physical plus elemental, which is what the site filters on.
+
+        Chaos damage is deliberately absent: the client prints it, but
+        weapon_filters offers dps, pdps and edps and nothing else, so a chaos
+        figure would be a number with nowhere to send it.
+        """
+        return self.physical_dps + self.elemental_dps
 
     @property
     def is_weapon(self) -> bool:
-        return self.total_dps > 0
+        return self.category in gamedata.WEAPON or self.total_dps > 0
+
+    @property
+    def has_defence(self) -> bool:
+        return bool(self.armour or self.evasion or self.energy_shield or self.ward)
 
     @property
     def corrupted(self) -> bool:
         return "corrupted" in self.flags
+
+    @property
+    def trade_category(self) -> str:
+        """The id for the site's type_filters.category, or "".
+
+        A unique's own entry carries no category -- it is a name attached to
+        a base -- so the answer comes from the base it sits on, which
+        :func:`_identify` has already looked up.
+        """
+        if self.info is not None:
+            derived = self.info.trade_category
+            if derived:
+                return derived
+        return gamedata.TRADE_CATEGORY.get(self.category, "")
 
     @property
     def links(self) -> int:
@@ -257,76 +287,120 @@ class ParsedItem:
         Uniques are included: two copies of the same unique can differ by a
         wide roll (a Doryani's Prototype rolls 150-200% on one line), and the
         name alone prices them as if they were interchangeable. They are
-        offered unticked, because the name is usually enough -- see
-        default_checked.
+        offered unticked, because the name is usually enough.
         """
         return [m for m in self.mods if m.kind != "enchant"]
 
     @property
     def priced_by_name(self) -> bool:
         """Whether identity, rather than rolls, is what this is worth."""
-        return self.rarity in ("unique", "currency", "card", "gem")
+        return self.rarity in _BY_NAME
+
+    @property
+    def exchange_tag(self) -> str:
+        """The bulk-exchange id, for the things priced by the pile.
+
+        Currency, fragments, essences and fossils are not sold as listings of
+        one item; they are exchanged in bulk, and the site has a separate
+        endpoint for it. An empty string means this is not such an item.
+        """
+        if self.info is None or self.rarity not in ("currency", "normal"):
+            return ""
+        return self.info.trade_tag
 
 
-def _strip_label(line: str, keys: tuple[str, ...]) -> str | None:
-    for key in keys:
-        prefix = f"{key}:"
-        if line.startswith(prefix):
-            return line[len(prefix):].strip()
-    return None
-
-
-def _first_int(text: str) -> int | None:
-    match = re.search(r"-?\d+", text)
-    return int(match.group()) if match else None
-
-
-def parse(text: str) -> ParsedItem | None:
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+def parse(text: str, data: GameData | None = None) -> ParsedItem | None:
     """Clipboard text -> :class:`ParsedItem`, or ``None`` if it is not an item.
 
     Returning None rather than raising is deliberate: the hotkey fires
-    whatever is under the cursor, and "the clipboard held something else"
-    is an ordinary outcome, not an error to report.
+    whatever is under the cursor, and "the clipboard held something else" is
+    an ordinary outcome, not an error to report.
     """
     if not text or SEPARATOR not in text:
         return None
-    blocks = [
+    if data is None:
+        data = gamedata.load()
+    if data is None:
+        return None
+    strings = data.strings
+
+    sections = [
         [line.rstrip() for line in block.strip("\n").split("\n") if line.strip()]
         for block in text.replace("\r\n", "\n").split(SEPARATOR)
     ]
-    blocks = [b for b in blocks if b]
-    if not blocks:
+    sections = [s for s in sections if s]
+    if not sections:
         return None
 
     item = ParsedItem(raw=text)
-    if not _parse_header(blocks[0], item):
+    if not _parse_header(sections[0], item, data):
         return None
-    # Whether the client is printing { ... } headers has to be known *before*
-    # the blocks are walked, because it changes what counts as a modifier at
-    # all: when they are present, a block without one is never a mod. That
-    # single rule is what keeps a flask's "마시려면 우클릭하십시오…", a gem's
-    # skill description, a contract's briefing and a unique's flavour text
-    # out of the mod list -- each of which used to be searched as if it were
-    # a rolled property, and each of which made the item unfindable.
+    _identify(item, data)
+
+    # Whether the client is marking mods up has to be known *before* the
+    # sections are walked, because it changes what counts as a modifier at
+    # all: when headers are present, a section without one is never a mod.
+    # That single rule is what keeps a flask's "마시려면 우클릭하십시오…", a
+    # gem's skill description, a contract's briefing and a unique's flavour
+    # text out of the mod list -- each of which used to be searched as if it
+    # were a rolled property, and each of which made the item unfindable.
     item.advanced = any(
-        _MOD_HEADER_RE.match(line) for block in blocks[1:] for line in block
+        _BRACED_RE.match(line) for section in sections[1:] for line in section
     )
-    for block in blocks[1:]:
-        _parse_block(block, item)
+
+    for section in sections[1:]:
+        for parser in _SECTION_PARSERS:
+            if parser(section, item, data, strings):
+                break
+        else:
+            item.unknown.extend(section)
+    _derive_flags(item)
     return item
 
 
-def _parse_header(lines: list[str], item: ParsedItem) -> bool:
-    """The first block carries class, rarity and the name(s)."""
+# Item states the client announces only through the modifiers it prints. The
+# game's string table has no label for "분열된 아이템" as a *section*, so
+# testing for one would mean writing the Korean out here and losing it again
+# the moment the client is patched -- while the mod headers that imply the
+# same thing are in the data and stay right.
+_IMPLIED_FLAGS = (
+    ("fractured", "fractured_item"),
+    ("veiled", "veiled"),
+)
+
+
+def _derive_flags(item: ParsedItem) -> None:
+    kinds = {mod.kind for mod in item.mods}
+    for kind, flag in _IMPLIED_FLAGS:
+        if kind in kinds:
+            item.flags.add(flag)
+
+
+def _parse_header(lines: list[str], item: ParsedItem, data: GameData) -> bool:
+    """The first section carries class, rarity and the name(s)."""
+    strings = data.strings
+    rarities = {
+        strings.RARITY_NORMAL: "normal",
+        strings.RARITY_MAGIC: "magic",
+        strings.RARITY_RARE: "rare",
+        strings.RARITY_UNIQUE: "unique",
+        strings.RARITY_GEM: "gem",
+        strings.RARITY_CURRENCY: "currency",
+        strings.RARITY_DIVCARD: "card",
+        strings.RARITY_QUEST: "quest",
+    }
     names: list[str] = []
     for line in lines:
-        value = _strip_label(line, _LABELS["class"])
+        value = _after(line, strings.ITEM_CLASS)
         if value is not None:
             item.item_class = value
             continue
-        value = _strip_label(line, _LABELS["rarity"])
+        value = _after(line, strings.RARITY)
         if value is not None:
-            item.rarity = RARITY.get(value, "normal")
+            item.rarity = rarities.get(value, "normal")
             continue
         names.append(line)
 
@@ -334,133 +408,430 @@ def _parse_header(lines: list[str], item: ParsedItem) -> bool:
         item.name, item.base = names[0], names[1]
     elif names:
         # Normal and magic items have no rolled name; a magic item's line is
-        # "칠흑의 사슬 장갑 - 회피의" and the base cannot be recovered from it
-        # without the full base list, so it is left whole and the search falls
-        # back to mods.
+        # "칠흑의 사슬 장갑 - 회피의" and the base has to be dug back out of
+        # it, which _identify does.
         item.base = names[-1]
+
+    # Decorations the client writes *into* the name, each of which the trade
+    # site rejects as part of a base type. They are facts about the item, so
+    # they are recorded before being stripped.
+    for attribute, flag in (
+        ("ITEM_SYNTHESISED", "synthesised_item"),
+        ("FOULBORN_NAME", "mutated"),
+        ("VESTIGIAL_NAME", "vestigial"),
+        ("MAP_BLIGHT_RAVAGED", "map_uberblighted"),
+        ("MAP_BLIGHTED", "map_blighted"),
+        ("ITEM_SUPERIOR", ""),
+        ("QUALITY_ANOMALOUS", "alt_quality"),
+        ("QUALITY_DIVERGENT", "alt_quality"),
+        ("QUALITY_PHANTASMAL", "alt_quality"),
+    ):
+        pattern = getattr(strings, attribute)
+        if not pattern:
+            continue
+        stripped = pattern.match(item.base)
+        if stripped:
+            item.base = stripped.group(1)
+            if flag:
+                item.flags.add(flag)
+    tier = strings.MAP_TIER.search(item.base) if strings.MAP_TIER else None
+    if tier:
+        item.map_tier = int(tier.group(1))
+        item.base = item.base[: tier.start()].strip()
+
     return bool(names or item.item_class)
 
 
-# Rarities whose blocks after the header are flavour and usage instructions,
-# never modifiers. A currency orb's paragraph explaining what it does looks
-# exactly like a mod list to any structural test, so the rarity is what has
-# to rule it out.
-_NO_MODS = {"currency", "card"}
+def _identify(item: ParsedItem, data: GameData) -> None:
+    """Find this item in the game's data, and take its category from there.
 
-# Gems are priced on level, quality and corruption; the block listing what
-# the skill does is a description of the skill, not rolls on this copy.
-_NO_MOD_CLASSES = ("스킬 젬", "보조 젬", "Skill Gem", "Support Gem")
-
-
-def _parse_block(lines: list[str], item: ParsedItem) -> None:
-    joined = lines[0]
-
-    for flag, words in _FLAGS.items():
-        if joined in words:
-            item.flags.add(flag)
-            return
-
-    value = _strip_label(joined, _LABELS["ilvl"])
-    if value is not None:
-        item.item_level = _first_int(value)
+    The category is what turns "a rare with these mods" into "a *wand* with
+    these mods". It also settles which of two identically worded mods was
+    meant -- see :meth:`GameData.match_stat` -- so it has to be known before
+    a single modifier is read.
+    """
+    namespace = {
+        "unique": "UNIQUE",
+        "gem": "GEM",
+        "card": "DIVINATION_CARD",
+    }.get(item.rarity, "")
+    lookup = item.name if item.rarity == "unique" else item.base
+    info = data.find_item(lookup, namespace, base=item.base)
+    if info is None and item.rarity != "unique":
+        # A magic item prints "<접두어> <기본> - <접미어>" with nothing to
+        # mark the three apart, and the site accepts only the base.
+        info = data.base_inside(item.base)
+        if info is not None:
+            item.base = info.name
+    if info is None and item.name:
+        info = data.find_item(item.name)
+    if info is None:
         return
-    value = _strip_label(joined, _LABELS["sockets"])
+    item.info = info
+    if info.namespace == "UNIQUE":
+        # A unique's own category comes from the base it sits on.
+        base = data.find_item(item.base, "ITEM") if item.base else None
+        item.category = base.category if base else ""
+    else:
+        item.category = info.category
+
+
+# ---------------------------------------------------------------------------
+# Section parsers
+# ---------------------------------------------------------------------------
+# Each is tried in turn against a section and answers whether it claimed it.
+# Anything nothing claims lands in ParsedItem.unknown, which is how a section
+# this app has not learned to read yet stays visible rather than being
+# silently searched as if it were a list of modifiers.
+def _parse_flags(section, item: ParsedItem, data: GameData, s) -> bool:
+    """One-line sections that are a statement about the item."""
+    if len(section) != 1:
+        return False
+    line = section[0]
+    for key, flag in (
+        ("CORRUPTED", "corrupted"),
+        ("UNIDENTIFIED", "unidentified"),
+        ("MIRRORED", "mirrored"),
+        ("SPLIT", "split"),
+        ("SECTION_SYNTHESISED", "synthesised_item"),
+        ("FOIL_UNIQUE", "foil"),
+        ("UNMODIFIABLE", "unmodifiable"),
+        ("CANNOT_USE_ITEM", ""),
+    ):
+        if line == getattr(s, key):
+            if flag:
+                item.flags.add(flag)
+            return True
+    for key, influence in (
+        ("INFLUENCE_SHAPER", "shaper"),
+        ("INFLUENCE_ELDER", "elder"),
+        ("INFLUENCE_CRUSADER", "crusader"),
+        ("INFLUENCE_HUNTER", "hunter"),
+        ("INFLUENCE_REDEEMER", "redeemer"),
+        ("INFLUENCE_WARLORD", "warlord"),
+    ):
+        if line == getattr(s, key):
+            item.influences.add(influence)
+            return True
+    return False
+
+
+def _parse_labelled(section, item: ParsedItem, data: GameData, s) -> bool:
+    """Sections that are one ``라벨: 값`` line and nothing else."""
+    if len(section) != 1:
+        return False
+    line = section[0]
+    for label, attribute in (
+        (s.ITEM_LEVEL, "item_level"),
+        (s.STACK_SIZE, "stack_size"),
+        (s.TALISMAN_TIER, None),
+        (s.CORPSE_LEVEL, None),
+        (s.MEMORY_STRANDS, "memory_strands"),
+        (s.SCRYING_MAP_AREA, None),
+        (s.MERCENARY_LEVEL, None),
+    ):
+        if label and line.startswith(label):
+            if attribute:
+                setattr(item, attribute, _first_int(line[len(label):]))
+            return True
+    value = _after(line, s.SOCKETS)
     if value is not None:
         item.sockets = value.strip()
-        return
-    if any(joined.startswith(k) for k in _LABELS["requirements"]):
-        return  # requirements never take part in a price check
-    for key in ("note", "stack"):
-        if _strip_label(joined, _LABELS[key]) is not None:
-            return
-
-    # A properties block (quality, damage, attack speed). Quality is the only
-    # part the search uses; the rest is shown by the site itself.
-    _parse_weapon(lines, item)
-
-    quality = gem_level = area_level = None
-    defence = False
-    for line in lines:
-        if _strip_label(line, _LABELS["defence"]) is not None:
-            defence = True
-        found = _strip_label(line, _LABELS["quality"])
-        if found is not None:
-            quality = _first_int(found)
-        found = _strip_label(line, _LABELS["area_level"])
-        if found is not None:
-            area_level = _first_int(found)
-        elif item.rarity == "gem":
-            # A gem's properties block leads with "레벨: 19", which is the gem
-            # level. On anything else "레벨" is a requirement, not a property.
-            found = _strip_label(line, _LABELS["gem_level"])
-            if found is not None:
-                gem_level = _first_int(found)
-    if defence:
-        item.has_defence = True
-    if quality is not None or gem_level is not None or area_level is not None or defence:
-        item.quality = quality if quality is not None else item.quality
-        item.gem_level = gem_level if gem_level is not None else item.gem_level
-        item.area_level = area_level if area_level is not None else item.area_level
-        return
-
-    if item.rarity in _NO_MODS or item.item_class in _NO_MOD_CLASSES:
-        return
-
-    if any(_MOD_HEADER_RE.match(line) for line in lines):
-        item.mods.extend(_parse_advanced(lines))
-    elif not item.advanced and _looks_like_mods(lines):
-        # Only trusted when the client is not marking mods up at all. With
-        # headers available, an unheaded block is prose by definition.
-        item.mods.extend(
-            ItemMod(text=line, **_rolls(line))
-            for line in lines
-            if not _REMINDER_RE.match(line)
-        )
+        return True
+    return False
 
 
-# "34-62" or, for elemental damage, several of them: "5-10, 12-30".
-_DAMAGE_RE = re.compile(r"(\d+(?:\.\d+)?)\s*-\s*(\d+(?:\.\d+)?)")
+def _parse_ignored(section, item: ParsedItem, data: GameData, s) -> bool:
+    """Sections a price check has no use for.
 
-
-def _parse_weapon(lines: list[str], item: ParsedItem) -> None:
-    """Damage per second, split the way a weapon is actually judged.
-
-    The game prints damage as a range and attack speed separately, which is
-    not comparable between weapons; DPS is what everyone actually comes to a
-    price check with. The printed numbers already include quality and local
-    mods (the client marks them "(augmented)"), so this needs no adjustment
-    -- averaging each range and multiplying by attacks per second is the
-    whole calculation.
+    Requirements are a consequence of the item rather than a property of it,
+    and the note is the price the player wrote on their own stash tab.
     """
-    speed = 0.0
+    head = section[0]
+    # The stash-tab note is the only label here the game's string table does
+    # not carry, because it is written by the player rather than the client.
+    if head.startswith("메모: ") or head.startswith("Note: "):
+        return True
+    if head.rstrip(":") in ("요구사항", "Requirements"):
+        return True
+    if s.FLASK_CHARGES and s.FLASK_CHARGES.match(head):
+        return True
+    for key in ("METAMORPH_HELP", "BEAST_HELP", "VOIDSTONE_HELP"):
+        if head == getattr(s, key):
+            return True
+    return False
+
+
+def _count(text: str) -> int:
+    return _first_int(text) or 0
+
+
+def _decimal(text: str) -> float:
+    found = _NUMBER_RE.search(text)
+    return float(found.group()) if found else 0.0
+
+
+# Which client label feeds which attribute of the item, and how to read the
+# number out of it. Order matters only in that the first label a line starts
+# with claims the line; no two of these share a prefix.
+_PROPERTIES = (
+    ("QUALITY", "quality", _first_int),
+    ("AREA_LEVEL", "area_level", _first_int),
+    ("ARMOUR", "armour", _count),
+    ("EVASION", "evasion", _count),
+    ("ENERGY_SHIELD", "energy_shield", _count),
+    ("TAG_WARD", "ward", _count),
+    ("BLOCK_CHANCE", "block", _count),
+    ("ATTACK_SPEED", "attacks_per_second", _decimal),
+    ("CRIT_CHANCE", "crit_chance", _decimal),
+)
+
+# Labels that mark a line as part of a properties block but carry nothing a
+# price check uses. Listed so the block is *claimed* -- a section nothing
+# claims is reported as unread, and a map's quantity line is read, not
+# unread.
+_PROPERTY_NOISE = (
+    "MAP_ITEM_QUANTITY", "MAP_ITEM_RARITY", "MAP_MONSTER_PACK_SIZE",
+    "MAP_MORE_MAPS", "MAP_MORE_SCARABS", "MAP_MORE_CURRENCY",
+    "MAP_MORE_DIVINATION_CARDS", "SENTINEL_CHARGE",
+)
+
+# The two kinds of damage the site can filter on. Chaos damage is printed by
+# the client too, but the site publishes no filter for it -- weapon_filters
+# offers dps, pdps and edps and nothing else -- so reading it would produce a
+# number with nowhere to go.
+_DAMAGE_LABELS = (("PHYSICAL_DAMAGE", "physical"), ("ELEMENTAL_DAMAGE", "elemental"))
+
+
+def _parse_properties(section, item: ParsedItem, data: GameData, s) -> bool:
+    """The block of numbers the client prints under the item's name.
+
+    Damage and attack speed become DPS, because that is the number anyone
+    actually price-checks a weapon on and the printed pair is not comparable
+    between weapons. The printed numbers already include quality and local
+    mods -- the client marks them "(augmented)" -- so averaging each range
+    and multiplying by attacks per second is the whole calculation.
+    """
+    claimed = False
     damage: dict[str, float] = {}
-    for line in lines:
-        found = _strip_label(line, _LABELS["aps"])
-        if found is not None:
-            try:
-                speed = float(_DAMAGE_RE.sub("", found).strip() or 0)
-            except ValueError:
-                speed = 0.0
-            if not speed:
-                numbers = re.findall(r"\d+(?:\.\d+)?", found)
-                speed = float(numbers[0]) if numbers else 0.0
+
+    for line in section:
+        if _read_property(line, item, s):
+            claimed = True
             continue
-        for key in ("physical", "elemental", "chaos"):
-            found = _strip_label(line, _LABELS[key])
-            if found is None:
+        if _read_damage(line, damage, s):
+            claimed = True
+            continue
+        # A gem's block leads with "레벨: 19", which is the gem level. On
+        # anything else 레벨 is a requirement, and requirements are a
+        # consequence of the item rather than a property of it.
+        if item.rarity == "gem":
+            found = _after(line, s.GEM_LEVEL)
+            if found is not None:
+                item.gem_level = _first_int(found)
+                claimed = True
                 continue
-            # Elemental damage can carry several ranges at once, one per
-            # element; they all contribute.
-            total = sum(
-                (float(low) + float(high)) / 2
-                for low, high in _DAMAGE_RE.findall(found)
-            )
-            damage[key] = damage.get(key, 0.0) + total
-    if not speed or not damage:
-        return
-    item.physical_dps = round(damage.get("physical", 0.0) * speed, 1)
-    item.elemental_dps = round(damage.get("elemental", 0.0) * speed, 1)
-    item.chaos_dps = round(damage.get("chaos", 0.0) * speed, 1)
+        if any(_after(line, getattr(s, key)) is not None for key in _PROPERTY_NOISE):
+            claimed = True
+
+    if item.attacks_per_second and damage:
+        item.physical_dps = round(damage.get("physical", 0.0) * item.attacks_per_second, 1)
+        item.elemental_dps = round(damage.get("elemental", 0.0) * item.attacks_per_second, 1)
+    return claimed
+
+
+def _read_property(line: str, item: ParsedItem, s) -> bool:
+    for key, attribute, read in _PROPERTIES:
+        value = _after(line, getattr(s, key))
+        if value is not None:
+            setattr(item, attribute, read(value))
+            return True
+    return False
+
+
+def _read_damage(line: str, damage: dict[str, float], s) -> bool:
+    for key, name in _DAMAGE_LABELS:
+        value = _after(line, getattr(s, key))
+        if value is None:
+            continue
+        # Elemental damage carries one range per element -- "5-10, 12-30" --
+        # and every one of them contributes.
+        damage[name] = damage.get(name, 0.0) + sum(
+            (float(low) + float(high)) / 2 for low, high in _DAMAGE_RE.findall(value)
+        )
+        return True
+    return False
+
+
+def _parse_modifiers(section, item: ParsedItem, data: GameData, s) -> bool:
+    """A block of rolled properties, split on its ``{ ... }`` headers."""
+    if item.rarity in ("currency", "card", "gem"):
+        # None of these has rolls. A currency orb's paragraph explaining what
+        # it does, a card's reward line and a gem's description of the skill
+        # all look exactly like a mod list to any structural test, so the
+        # rarity is what has to rule them out. A gem is priced on its level,
+        # quality and corruption -- what the skill does is the same on every
+        # copy.
+        return False
+    braced = any(_BRACED_RE.match(line) for line in section)
+    if item.advanced and not braced:
+        # With headers available, an unheaded section is prose by definition.
+        return False
+    if not braced and not _looks_like_mods(section):
+        return False
+
+    blocks = _split_blocks(section, s) if braced else [
+        ({}, [line]) for line in _without_reminders(section)
+    ]
+    for header, lines in blocks:
+        if not lines:
+            continue
+        item.mods.extend(_resolve_block(header, lines, item, data))
+    return True
+
+
+def _split_blocks(section, s) -> list[tuple[dict, list[str]]]:
+    """Every line after a ``{ ... }`` header belongs to that mod.
+
+    This is the only reliable way to know that "스킬 사용 시 장착된 주문
+    발동…" and "이렇게 발동된 주문의 비용 150% 증폭" are one modifier rather
+    than two.
+    """
+    blocks: list[tuple[dict, list[str]]] = []
+    header: dict = {}
+    body: list[str] = []
+    for line in _without_reminders(section):
+        braced = _BRACED_RE.match(line)
+        if braced:
+            if body:
+                blocks.append((header, body))
+            header, body = _parse_header_line(braced.group("body"), s), []
+        else:
+            body.append(line)
+    if body:
+        blocks.append((header, body))
+    return blocks
+
+
+def _parse_header_line(body: str, s) -> dict:
+    """``접두어 속성 부여 "엄벌가의" (등급: 1) — 소환수, 젬`` taken apart.
+
+    The em-dashed tail is the mod's tags and, on an eldritch implicit, the
+    bonus its rank grants. Neither says anything a search can use, and both
+    get in the way of reading the part that does, so the line is cut at the
+    first em dash before anything else looks at it.
+    """
+    info = body.split(EM_DASH)[0].strip()
+    out: dict = {"kind": "explicit", "affix": "", "tier": None, "rank": None}
+
+    for attribute, kind in (("EATER_IMPLICIT", "implicit"), ("EXARCH_IMPLICIT", "implicit")):
+        pattern = getattr(s, attribute)
+        if pattern and pattern.match(info):
+            out["kind"] = kind
+            return out
+    for key, flag in (("FOULBORN_MODIFIER", "explicit"), ("VESTIGIAL_IMPLICIT", "implicit")):
+        if getattr(s, key) and info.startswith(getattr(s, key)):
+            out["kind"] = flag
+            return out
+
+    match = s.MODIFIER_LINE.match(info) if s.MODIFIER_LINE else None
+    kind_text = (match.group("type") if match else info).strip()
+    for kind, keys in _HEADER_KINDS:
+        if any(getattr(s, key) and getattr(s, key) in kind_text for key in keys):
+            out["kind"] = kind
+            break
+    else:
+        # No client string in this build names enchantments, and they are the
+        # one header type that does. Falling back to the word itself is
+        # narrow enough to be safe: nothing else in a header says 인챈트.
+        if "인챈트" in kind_text or "Enchant" in kind_text:
+            out["kind"] = "enchant"
+    if any(getattr(s, key) and getattr(s, key) in kind_text for key in _PREFIX_KEYS):
+        out["affix"] = "prefix"
+    elif any(getattr(s, key) and getattr(s, key) in kind_text for key in _SUFFIX_KEYS):
+        out["affix"] = "suffix"
+    if match:
+        out["tier"] = int(match.group("tier")) if match.group("tier") else None
+        out["rank"] = int(match.group("rank")) if match.group("rank") else None
+    return out
+
+
+def _resolve_block(header: dict, lines: list[str], item: ParsedItem, data: GameData):
+    """Turn one ``{ ... }`` block into the modifiers the site indexes.
+
+    Which way a two-line block goes is the game's call, not ours: the crafted
+    trigger mod is published as a single two-line stat, while a tincture's
+    implicit -- equally one ``{ 고정 속성 부여 }`` block -- is two separate
+    stats. So the combined text is looked up first and kept when it exists;
+    only when it does not, and the pieces do, is the block taken apart.
+    """
+    kind = header.get("kind", "explicit")
+    unscalable = data.strings.UNSCALABLE_VALUE
+    common = {
+        "kind": kind,
+        "affix": header.get("affix", ""),
+        "tier": header.get("tier"),
+        "rank": header.get("rank"),
+        # A unique's roll the game marks as fixed. Worth knowing: there is
+        # no point offering to widen a search around a number that is the
+        # same on every copy of the item.
+        "unscalable": bool(unscalable) and any(l.endswith(unscalable) for l in lines),
+    }
+    joined = "\n".join(lines)
+    whole = _match(joined, kind, item, data)
+    if whole is not None or len(lines) == 1:
+        return [_mod(joined, whole, **common)]
+
+    pieces = [(line, _match(line, kind, item, data)) for line in lines]
+    if any(found is not None for _line, found in pieces):
+        return [_mod(line, found, **common) for line, found in pieces]
+    # Nothing recognised either way: kept whole so the window still shows the
+    # item as the game printed it. It simply contributes no filter.
+    return [_mod(joined, None, **common)]
+
+
+def _match(text: str, kind: str, item: ParsedItem, data: GameData) -> StatMatch | None:
+    unscalable = data.strings.UNSCALABLE_VALUE
+    if unscalable and text.endswith(unscalable):
+        text = text[: -len(unscalable)]
+    found = data.match_stat(text, kind, item.category)
+    if found is None and kind not in ("explicit", "enchant"):
+        # A wording the game publishes only as an explicit ("번개 피해만 줄
+        # 수 있음" on a unique) still has to be searchable when it turns up
+        # under some other header.
+        found = data.match_stat(text, "explicit", item.category)
+    return found
+
+
+def _mod(text: str, found: StatMatch | None, **common) -> ItemMod:
+    mod = ItemMod(text=text.strip(), match=found, **common)
+    if found is not None:
+        mod.values = list(found.values)
+        mod.ranges = list(found.ranges)
+    else:
+        # Unrecognised, so every number on the line is a guess at a roll.
+        # Shown, never searched -- ItemMod.ids is empty without a match.
+        mod.values = [float(n) for n in _NUMBER_RE.findall(text)]
+    return mod
+
+
+def _without_reminders(section: list[str]) -> list[str]:
+    """Drop the game's parenthesised gloss on a keyword.
+
+    A gloss can run to several lines, so this tracks whether one is open
+    rather than testing each line on its own.
+    """
+    out: list[str] = []
+    inside = False
+    for line in section:
+        if not inside and _REMINDER_OPEN_RE.match(line):
+            inside = True
+        if inside:
+            if _REMINDER_CLOSE_RE.search(line):
+                inside = False
+            continue
+        out.append(line)
+    return out
 
 
 def _looks_like_mods(lines: list[str]) -> bool:
@@ -474,68 +845,15 @@ def _looks_like_mods(lines: list[str]) -> bool:
     text = " ".join(lines)
     if text.startswith('"') or text.startswith("'"):
         return False
-    if len(lines) and lines[-1].startswith("- "):
+    if lines and lines[-1].startswith("- "):
         return False
     return True
 
 
-def _parse_advanced(lines: list[str]) -> list[ItemMod]:
-    """Split a block on its ``{ ... }`` headers.
-
-    Every line after a header, up to the next one, belongs to that mod. This
-    is the only reliable way to know that "스킬 사용 시 장착된 주문 발동…" and
-    "이렇게 발동된 주문의 비용 150% 증폭" are one modifier rather than two.
-    """
-    mods: list[ItemMod] = []
-    kind, affix, tier = "explicit", "", None
-    body: list[str] = []
-
-    def flush() -> None:
-        if not body:
-            return
-        text = "\n".join(body)
-        mods.append(ItemMod(text=text, kind=kind, affix=affix, tier=tier, **_rolls(text)))
-
-    for line in lines:
-        header = _MOD_HEADER_RE.match(line)
-        if header:
-            flush()
-            body = []
-            kind, affix, tier = _classify(header.group("body"))
-        elif not _REMINDER_RE.match(line):
-            body.append(line)
-    flush()
-    return mods
-
-
-def _classify(header: str) -> tuple[str, str, int | None]:
-    kind = "explicit"
-    for name, words in _AFFIX_KINDS:
-        if any(word in header for word in words):
-            kind = name
-            break
-    affix = ""
-    if any(w in header for w in ("접두어", "Prefix")):
-        affix = "prefix"
-    elif any(w in header for w in ("접미어", "Suffix")):
-        affix = "suffix"
-    # unique/implicit headers are a source, not a slot -- they map onto the
-    # site's "explicit"/"implicit" buckets, which is what query.py needs.
-    if kind in ("prefix", "suffix", "unique"):
-        kind = "explicit"
-    tier_match = _TIER_RE.search(header)
-    return kind, affix, int(tier_match.group(1)) if tier_match else None
-
-
-def _rolls(text: str) -> dict:
-    """Pull the rolled numbers, and their ranges when the game gives them."""
-    values: list[float] = []
-    ranges: list[tuple[float, float]] = []
-    remainder = text
-    for match in _ROLL_RE.finditer(text):
-        values.append(float(match.group("value")))
-        ranges.append((float(match.group("lo")), float(match.group("hi"))))
-        remainder = remainder.replace(match.group(0), " ", 1)
-    if not values:
-        values = [float(n) for n in _BARE_RE.findall(remainder)]
-    return {"values": values, "ranges": ranges}
+_SECTION_PARSERS = (
+    _parse_flags,
+    _parse_labelled,
+    _parse_ignored,
+    _parse_properties,
+    _parse_modifiers,
+)

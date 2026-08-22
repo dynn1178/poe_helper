@@ -189,6 +189,13 @@ def main() -> None:
 
     app.after(4000, app.check_for_updates_on_start)
 
+    # The price check's game data: several megabytes of modifier and base-type
+    # tables that have to be in memory before the first item can be read.
+    # Loaded here rather than on the hotkey, where the quarter-second it costs
+    # would land on the keyboard hook's thread and delay the very press that
+    # asked for it.
+    app.after(6000, app.preload_game_data)
+
     app.mainloop()
 
 

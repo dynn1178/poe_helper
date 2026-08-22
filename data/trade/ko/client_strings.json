@@ -1,0 +1,274 @@
+{
+ "RARITY_NORMAL": "일반",
+ "RARITY_MAGIC": "마법",
+ "RARITY_RARE": "희귀",
+ "RARITY_UNIQUE": "고유",
+ "RARITY_GEM": "젬",
+ "RARITY_CURRENCY": "화폐",
+ "RARITY_DIVCARD": "점술 카드",
+ "RARITY_QUEST": "퀘스트",
+ "MAP_TIER": {
+  "re": " \\((\\d+)등급\\)$",
+  "flags": ""
+ },
+ "MAP_ITEM_QUANTITY": "아이템 수량: ",
+ "MAP_ITEM_RARITY": "아이템 희귀도: ",
+ "MAP_MONSTER_PACK_SIZE": "몬스터 무리 규모: ",
+ "MAP_MORE_MAPS": "지도 더 많음: ",
+ "MAP_MORE_SCARABS": "갑충석 더 많음: ",
+ "MAP_MORE_CURRENCY": "화폐 더 많음: ",
+ "MAP_MORE_DIVINATION_CARDS": "점술 카드 증폭: ",
+ "MAP_COMPLETION_REWARD": {
+  "re": "^보상: 반짝이 (.*)$",
+  "flags": ""
+ },
+ "RARITY": "아이템 희귀도: ",
+ "ITEM_CLASS": "아이템 종류: ",
+ "ITEM_LEVEL": "아이템 레벨: ",
+ "CORPSE_LEVEL": "시신 레벨: ",
+ "TALISMAN_TIER": "부적 등급: ",
+ "GEM_LEVEL": "레벨: ",
+ "STACK_SIZE": "중첩 개수: ",
+ "SOCKETS": "홈: ",
+ "QUALITY": "퀄리티: ",
+ "MEMORY_STRANDS": "기억 가닥: ",
+ "PHYSICAL_DAMAGE": "물리 피해: ",
+ "ELEMENTAL_DAMAGE": "원소 피해: ",
+ "CRIT_CHANCE": "치명타 확률: ",
+ "ATTACK_SPEED": "초당 공격 횟수: ",
+ "ARMOUR": "방어도: ",
+ "EVASION": "회피: ",
+ "ENERGY_SHIELD": "에너지 보호막: ",
+ "TAG_WARD": "수호: ",
+ "BLOCK_CHANCE": "막기 확률: ",
+ "CORRUPTED": "타락",
+ "UNIDENTIFIED": "미확인",
+ "ITEM_SUPERIOR": {
+  "re": "^상급 (.*)$",
+  "flags": ""
+ },
+ "MAP_BLIGHTED": {
+  "re": "^역병 걸린 (.*)$",
+  "flags": ""
+ },
+ "MAP_BLIGHT_RAVAGED": {
+  "re": "^역병에 유린당한 (.*)$",
+  "flags": ""
+ },
+ "INFLUENCE_SHAPER": "쉐이퍼 아이템",
+ "INFLUENCE_ELDER": "엘더 아이템",
+ "INFLUENCE_CRUSADER": "십자군 아이템",
+ "INFLUENCE_HUNTER": "사냥꾼 아이템",
+ "INFLUENCE_REDEEMER": "대속자 아이템",
+ "INFLUENCE_WARLORD": "전쟁군주 아이템",
+ "SECTION_SYNTHESISED": "결합된 아이템",
+ "ITEM_SYNTHESISED": {
+  "re": "^결합된 (.*)$",
+  "flags": ""
+ },
+ "VEILED_PREFIX": "장막 접두어",
+ "VEILED_SUFFIX": "장막 접미어",
+ "FLASK_CHARGES": {
+  "re": "^현재 충전량: \\d+$",
+  "flags": ""
+ },
+ "METAMORPH_HELP": "테인의 연구실에서 이 아이템을 다른 샘플과 조합하십시오.",
+ "BEAST_HELP": "우클릭으로 이것을 야수 도감에 추가하십시오.",
+ "VOIDSTONE_HELP": "아틀라스에 이 아이템을 장착하여 지도를 강화하십시오.",
+ "METAMORPH_BRAIN": {
+  "re": "^Мозг: .*$",
+  "flags": ""
+ },
+ "METAMORPH_EYE": {
+  "re": "^Глаз: .*$",
+  "flags": ""
+ },
+ "METAMORPH_LUNG": {
+  "re": "^Лёгкое: .*$",
+  "flags": ""
+ },
+ "METAMORPH_HEART": {
+  "re": "^Сердце: .*$",
+  "flags": ""
+ },
+ "METAMORPH_LIVER": {
+  "re": "^Печень: .*$",
+  "flags": ""
+ },
+ "CANNOT_USE_ITEM": "아이템 착용 불가. 아이템 효과 미적용",
+ "QUALITY_ANOMALOUS": {
+  "re": "^기묘한 (.*)$",
+  "flags": ""
+ },
+ "QUALITY_DIVERGENT": {
+  "re": "^상이한 (.*)$",
+  "flags": ""
+ },
+ "QUALITY_PHANTASMAL": {
+  "re": "^몽환적인 (.*)$",
+  "flags": ""
+ },
+ "AREA_LEVEL": "지역 레벨: ",
+ "HEIST_WINGS_REVEALED": "부속 건물 드러남: ",
+ "HEIST_BLUEPRINT_TARGET": "강탈 대상: ",
+ "HEIST_BLUEPRINT_ENCHANTS": "인챈트된 병기",
+ "HEIST_BLUEPRINT_TRINKETS": "도둑의 장신구 또는 화폐",
+ "HEIST_BLUEPRINT_GEMS": "도둑의 장신구 또는 화폐",
+ "HEIST_BLUEPRINT_REPLICAS": "모조품 또는 실험적 아이템",
+ "HEIST_CONTRACT_JOB": {
+  "re": "^(?P<job>.+) 필요\\((?P<level>\\d+)(?:\\s*\\(unmet\\))?레벨\\)$",
+  "flags": ""
+ },
+ "HEIST_JOB_LOCKPICKING": "자물쇠 따기",
+ "HEIST_JOB_BRUTEFORCE": "완력",
+ "HEIST_JOB_PERCEPTION": "통찰력",
+ "HEIST_JOB_DEMOLITION": "파괴 공작",
+ "HEIST_JOB_COUNTERTHAUMATURGY": "반-마석학",
+ "HEIST_JOB_TRAPDISARMAMENT": "덫 해제",
+ "HEIST_JOB_AGILITY": "민첩함",
+ "HEIST_JOB_DECEPTION": "기만",
+ "HEIST_JOB_ENGINEERING": "공학",
+ "HEIST_CONTRACT_TARGET": {
+  "re": "^강탈 대상: .+ \\((.+)\\)$",
+  "flags": ""
+ },
+ "HEIST_TARGET_PRICELESS": "환산 불가능한 가치",
+ "MIRRORED": "복제",
+ "SPLIT": "분할됨",
+ "MODIFIER_LINE": {
+  "re": "^(?P<type>[^\"]+)(?:\\s+\"(?P<name>[^\"]*)\")?(?:\\s+\\(등급: (?P<tier>\\d+)\\))?(?:\\s+\\(단계: (?P<rank>\\d+)\\))?$",
+  "flags": ""
+ },
+ "PREFIX_MODIFIER": "접두어 속성 부여",
+ "SUFFIX_MODIFIER": "접미어 속성 부여",
+ "CRAFTED_PREFIX": "대가의 제작 접두어 속성 부여",
+ "CRAFTED_SUFFIX": "대가의 제작 접미어 속성 부여",
+ "IMPLICIT_MODIFIER": "고정 속성 부여",
+ "FRACTURED_PREFIX": "분열된 접두어 속성 부여",
+ "FRACTURED_SUFFIX": "분열된 접미어 속성 부여",
+ "UNSCALABLE_VALUE": " — 변경이 불가능한 값",
+ "CORRUPTED_IMPLICIT": "타락 고정 속성 부여",
+ "MODIFIER_INCREASED": {
+  "re": "^(.+?)% 증가$",
+  "flags": ""
+ },
+ "INCURSION_OPEN": "열린 방:",
+ "INCURSION_OBSTRUCTED": "막힌 방:",
+ "EATER_IMPLICIT": {
+  "re": "^세계 포식자 고정 속성 \\((?P<rank>.+)\\)$",
+  "flags": ""
+ },
+ "EXARCH_IMPLICIT": {
+  "re": "^작열의 총주교 고정 속성 \\((?P<rank>.+)\\)$",
+  "flags": ""
+ },
+ "ELDRITCH_MOD_R1": "하급",
+ "ELDRITCH_MOD_R2": "상급",
+ "ELDRITCH_MOD_R3": "우수한",
+ "ELDRITCH_MOD_R4": "특출난",
+ "ELDRITCH_MOD_R5": "정교한",
+ "ELDRITCH_MOD_R6": "완벽한",
+ "SENTINEL_CHARGE": "충전: ",
+ "SHAPER_MODS": [
+  "- 형성",
+  "쉐이퍼의"
+ ],
+ "ELDER_MODS": [
+  "- 엘더",
+  "엘더의"
+ ],
+ "CRUSADER_MODS": [
+  "십자군의",
+  "- 십자군"
+ ],
+ "HUNTER_MODS": [
+  "사냥꾼의",
+  "- 사냥꾼"
+ ],
+ "REDEEMER_MODS": [
+  "- 구원",
+  "대속자의"
+ ],
+ "WARLORD_MODS": [
+  "전쟁군주의",
+  "- 점령자"
+ ],
+ "DELVE_MODS": [
+  "지하의",
+  "- 지하"
+ ],
+ "VEILED_MODS": [
+  "선택",
+  "- 질서",
+  "선택받은"
+ ],
+ "INCURSION_MODS": [
+  "과텔리치의",
+  "조펙의",
+  "토포탄테의",
+  "타카티의",
+  "마타틀의",
+  "- 마타틀",
+  "시타콰로틀의",
+  "- 시타콰로틀",
+  "- 타카티",
+  "- 과텔리치",
+  "- 푸후알테"
+ ],
+ "ESSENCE_MODS": [
+  "- 에센스",
+  "에센스"
+ ],
+ "INFAMOUS_MODS": [
+  "- 악명",
+  "악명 높은"
+ ],
+ "FOIL_UNIQUE": "반짝이 버전 고유 아이템",
+ "UNMODIFIABLE": "속성 부여 불가",
+ "FOULBORN_NAME": {
+  "re": "^삿된 (.*)$",
+  "flags": ""
+ },
+ "FOULBORN_MODIFIER": "삿된 고유 속성",
+ "VESTIGIAL_NAME": {
+  "re": "^흔적 (.*)$",
+  "flags": ""
+ },
+ "VESTIGIAL_IMPLICIT": "흔적 고정 속성",
+ "SCRYING_MAP_AREA": "지도 지역: ",
+ "CHART_SULPHUR": "망자의 유황: ",
+ "MERCENARY_LEVEL": "용병 레벨: ",
+ "MERCENARY_BUILD": "빌드: ",
+ "CHAT_SYSTEM": {
+  "re": "^: (?P<body>.+)$",
+  "flags": ""
+ },
+ "CHAT_TRADE": {
+  "re": "^\\$(?:<(?P<guild_tag>.+?)> )?(?P<char_name>.+?): (?P<body>.+)$",
+  "flags": ""
+ },
+ "CHAT_GLOBAL": {
+  "re": "^#(?:<(?P<guild_tag>.+?)> )?(?P<char_name>.+?): (?P<body>.+)$",
+  "flags": ""
+ },
+ "CHAT_PARTY": {
+  "re": "^%(?:<(?P<guild_tag>.+?)> )?(?P<char_name>.+?): (?P<body>.+)$",
+  "flags": ""
+ },
+ "CHAT_GUILD": {
+  "re": "^&(?:<(?P<guild_tag>.+?)> )?(?P<char_name>.+?): (?P<body>.+)$",
+  "flags": ""
+ },
+ "CHAT_WHISPER_TO": {
+  "re": "^@발신 (?P<char_name>.+?): (?P<body>.+)$",
+  "flags": ""
+ },
+ "CHAT_WHISPER_FROM": {
+  "re": "^@수신 (?:<(?P<guild_tag>.+?)> )?(?P<char_name>.+?): (?P<body>.+)$",
+  "flags": ""
+ },
+ "CHAT_WEBTRADE_GEM": {
+  "re": "^уровень (?P<gem_lvl>\\d+) (?P<gem_qual>\\d+)% (?P<gem_name>.+)$",
+  "flags": ""
+ }
+}

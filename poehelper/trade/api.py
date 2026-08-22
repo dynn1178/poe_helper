@@ -1,26 +1,38 @@
 """Client for the official trade site's JSON API.
 
 The Korean (Kakao) realm serves the same API as pathofexile.com at its own
-host, and -- crucially -- serves the *Korean* text for all 18,000-odd
-modifiers alongside the same stat ids the search takes. That is what makes
-price checking possible for this client at all: the hard part of a localised
-price checker is normally hand-maintaining a translation table for every mod
-in the game, and here the site simply hands it over.
+host, and takes the same stat ids -- which is what lets :mod:`gamedata`,
+built against the international game data, drive a search here at all.
 
-    GET  /api/trade/data/leagues   -> current leagues
-    GET  /api/trade/data/stats     -> every searchable modifier, localised
-    POST /api/trade/search/<league> -> a search id + up to 100 result ids
-    GET  /api/trade/fetch/<ids>    -> the actual listings for those ids
+    GET  /api/trade/data/leagues     -> current leagues
+    GET  /api/trade/data/filters     -> what this realm will accept in a query
+    GET  /api/trade/data/items       -> the site's own spelling of every name
+    GET  /api/trade/data/static      -> currency ids and their localised names
+    GET  /api/trade/data/stats       -> every searchable modifier, localised
+    POST /api/trade/search/<league>  -> a search id + up to 100 result ids
+    GET  /api/trade/fetch/<ids>      -> the actual listings for those ids
+    POST /api/trade/exchange/<league> -> bulk rates, for things sold by the pile
 
-Two things this module exists to get right:
+Understanding an item is :mod:`gamedata`'s job now, not this module's. What
+is left here is everything only the *realm* can answer:
+
+*What it will accept.* Kakao is not the same build as the international
+realm and the two disagree about filters in both directions -- it has no
+``foulborn_item`` and still calls that ``mutated``, it has no
+``sentinel_filters``, and it does have ``sanctum_filters``. Sending a filter
+the realm has never heard of rejects the whole search, so :meth:`filter_allowed`
+asks first.
+
+*How it spells a name.* The search endpoint matches names exactly and the
+site's own data is not tidy -- 들불 체관 is published with a trailing space.
 
 *Rate limits.* GGG publishes the policy in response headers and enforces it
 with temporary IP bans. :class:`_RateLimiter` reads that policy and blocks
 *before* sending a request that would breach it, rather than reacting to a
 429 after the damage is done.
 
-*Not re-downloading the world.* The stats payload is several megabytes and
-changes only when the game does, so it is cached next to the executable and
+*Not re-downloading the world.* These payloads are several megabytes and
+change only when the game does, so they are cached next to the executable and
 refreshed weekly.
 """
 from __future__ import annotations
@@ -55,6 +67,11 @@ _USER_AGENT = f"KuanPoeHelper/{version.__version__} (+https://github.com/dynn117
 
 _CACHE_DAYS = 7
 _TIMEOUT = 25
+
+# The longest a request will be held back before the caller is told to try
+# again instead. Long enough to absorb the site's short-window pacing rules,
+# short enough that a price check never looks like it has hung.
+_MAX_WAIT = 15.0
 
 
 class TradeError(Exception):
@@ -113,17 +130,28 @@ class _RateLimiter:
             self._blocked_until = max(self._blocked_until, time.monotonic() + seconds)
 
     def wait(self) -> None:
+        """Block until one more request is inside the policy, or give up.
+
+        Pacing and a ban are two different things and only one of them is
+        worth waiting through. Holding a request back for a second or two so
+        a burst stays inside "8 per 10s" is invisible; sitting on it for the
+        half hour a breach of "60 per 300s" costs is not -- the window would
+        show "거래소에서 찾는 중…" for thirty minutes with no way to tell it
+        from a hang. So a wait longer than :data:`_MAX_WAIT` is reported
+        instead of served.
+        """
         while True:
             with self._lock:
                 now = time.monotonic()
                 if now < self._blocked_until:
-                    delay = self._blocked_until - now
-                else:
-                    delay = self._delay_for(now)
-                    if delay <= 0:
-                        self._hits.append(now)
-                        return
-            time.sleep(min(delay, 5.0))
+                    raise RateLimited(self._blocked_until - now)
+                delay = self._delay_for(now)
+                if delay <= 0:
+                    self._hits.append(now)
+                    return
+                if delay > _MAX_WAIT:
+                    raise RateLimited(delay)
+            time.sleep(min(delay, 1.0))
 
     def _delay_for(self, now: float) -> float:
         """How long before one more request would still be inside every rule.
@@ -164,6 +192,9 @@ class TradeAPI:
         self._bases: list[str] | None = None
         self._names: dict[str, str] | None = None
         self._types: dict[str, str] | None = None
+        self._filter_ids: dict[str, set[str]] | None = None
+        self._categories: set[str] | None = None
+        self._currency: dict[str, str] | None = None
         self._lock = threading.Lock()
 
     # ---- settings ---------------------------------------------------------
@@ -256,24 +287,84 @@ class TradeAPI:
     def items(self) -> list[dict]:
         return self._cached("items", "/api/trade/data/items").get("result", [])
 
-    def base_types(self) -> list[str]:
-        """Every base type the site knows, longest first.
+    def filters(self) -> list[dict]:
+        return self._cached("filters", "/api/trade/data/filters").get("result", [])
 
-        Longest first because resolution is "which base is inside this
-        string", and 신성한 생명력 플라스크 must win over 생명력 플라스크
-        when both are contained in the same name.
+    def static(self) -> list[dict]:
+        return self._cached("static", "/api/trade/data/static").get("result", [])
+
+    # ---- what this realm actually accepts ---------------------------------
+    def _filter_index(self) -> tuple[dict[str, set[str]], set[str]]:
+        """The filter ids and category options this realm publishes.
+
+        Worth asking rather than assuming. The Korean realm is not the same
+        build as the international one and the two disagree about filters in
+        both directions: Kakao has no ``foulborn_item`` (it still calls that
+        ``mutated``) and no ``sentinel_filters``, while it does have
+        ``sanctum_filters`` and ``chart_shape``. Sending a filter the realm
+        does not know earns HTTP 400 for the whole search, so a filter this
+        app knows about is only sent once the realm has agreed it exists.
+
+        A failed download leaves both empty, which is read as "allow it and
+        let the site decide" -- refusing to search at all because a *list of
+        filters* could not be fetched would be the worse failure.
         """
         with self._lock:
-            if self._bases is None:
-                names = {
-                    entry["type"]
-                    for group in self.items()
-                    for entry in group.get("entries", [])
-                    if entry.get("type")
-                }
-                self._bases = sorted(names, key=len, reverse=True)
-                logger.info("trade base types: %d", len(self._bases))
-            return self._bases
+            if self._filter_ids is not None and self._categories is not None:
+                return self._filter_ids, self._categories
+            ids: dict[str, set[str]] = {}
+            categories: set[str] = set()
+            try:
+                groups = self.filters()
+            except TradeError:
+                logger.debug("filter list unavailable", exc_info=True)
+                return {}, set()
+            for group in groups:
+                names = ids.setdefault(group.get("id", ""), set())
+                for entry in group.get("filters", ()):
+                    names.add(entry.get("id", ""))
+                    if entry.get("id") == "category":
+                        categories.update(
+                            option.get("id")
+                            for option in (entry.get("option") or {}).get("options", ())
+                            if option.get("id")
+                        )
+            self._filter_ids, self._categories = ids, categories
+            logger.info(
+                "trade filters: %d groups, %d categories", len(ids), len(categories)
+            )
+            return ids, categories
+
+    def filter_allowed(self, group: str, name: str) -> bool:
+        ids, _categories = self._filter_index()
+        if not ids:
+            return True
+        return name in ids.get(group, set())
+
+    def category_allowed(self, category: str) -> bool:
+        _ids, categories = self._filter_index()
+        return not categories or category in categories
+
+    def currency_names(self) -> dict[str, str]:
+        """Currency ids mapped to the names a Korean player reads.
+
+        The site publishes these itself, localised, which beats the short
+        hand-written table this used to render prices with -- that one had
+        eighteen entries and the game has hundreds.
+        """
+        with self._lock:
+            if self._currency is not None:
+                return self._currency
+            names: dict[str, str] = {}
+            try:
+                for group in self.static():
+                    for entry in group.get("entries", ()):
+                        if entry.get("id") and entry.get("text"):
+                            names.setdefault(entry["id"], entry["text"])
+            except TradeError:
+                logger.debug("static data unavailable", exc_info=True)
+            self._currency = names
+            return names
 
     def _name_index(self) -> tuple[dict[str, str], dict[str, str]]:
         """Unique names and base types, keyed by their whitespace-flattened form.
@@ -324,24 +415,6 @@ class TradeAPI:
         _names, types = self._name_index()
         return types.get(_flatten(printed), "")
 
-    def resolve_base(self, printed: str) -> str:
-        """The base type inside a magic item's decorated name.
-
-        A magic item prints as "<prefix> <base> - <suffix>" with no way to
-        tell the three apart, and the site only accepts the base. Rather than
-        trying to strip affixes -- there are thousands, in two languages --
-        this looks for the longest base type the site itself publishes that
-        appears in the string. Returns "" when nothing matches, which leaves
-        the search to fall back on mods alone.
-        """
-        printed = (printed or "").strip()
-        if not printed:
-            return ""
-        for base in self.base_types():
-            if base in printed:
-                return base
-        return ""
-
     # ---- stat lookup ------------------------------------------------------
     def stat_index(self) -> dict[str, list[dict]]:
         """Normalised mod text -> the stat entries that render as it.
@@ -391,6 +464,25 @@ class TradeAPI:
                 return found
         return []
 
+    def find_stat_ids(self, text: str, kind: str) -> list[str]:
+        """The site's own ids for a modifier line, as a second opinion.
+
+        The bundled game data is what normally resolves a mod, and it is
+        better at it -- it knows that a line printed as 감소 is a negative
+        증가, which no amount of comparing text can work out. But it is a
+        snapshot, and the realm gets new modifiers before a new snapshot is
+        downloaded. So when the data has never heard of a line, the site is
+        asked whether *it* has.
+
+        Costs a multi-megabyte download the first time, which is why nothing
+        calls this on the path that opens the window.
+        """
+        entries = self.find_stat(text)
+        if not entries:
+            return []
+        wanted = [e for e in entries if e["id"].startswith(f"{kind}.")]
+        return [e["id"] for e in (wanted or entries)][:1]
+
     # ---- searching --------------------------------------------------------
     def search(self, query: dict, league: str | None = None) -> dict:
         league = league or self.league()
@@ -400,6 +492,47 @@ class TradeAPI:
             "total": result.get("total", 0),
             "ids": result.get("result", []),
         }
+
+    def exchange(
+        self, want: str, have: str = "chaos", league: str | None = None, minimum: int = 1
+    ) -> dict:
+        """What a pile of *want* trades for, in *have*.
+
+        Currency, fragments, essences, fossils and scarabs are not sold as
+        listings of one item -- they are exchanged in bulk, and a normal
+        search finds only the handful of people who happened to list a single
+        one. Pricing a stack of chaos as if it were a rare wand is why
+        currency never returned a believable number.
+
+        The response has the same shape as a search, so :meth:`fetch` reads
+        it, but each listing carries an ``exchange`` block with the rate
+        rather than a ``price``.
+        """
+        league = league or self.league()
+        payload = {
+            "query": {
+                "status": {"option": "online"},
+                "have": [have],
+                "want": [want],
+                "minimum": minimum,
+            },
+            "sort": {"have": "asc"},
+            "engine": "new",
+        }
+        result = self._request(f"/api/trade/exchange/{_quote(league)}", payload)
+        return {
+            "id": result.get("id", ""),
+            "total": result.get("total", 0),
+            # The exchange endpoint answers with the listings inline, keyed
+            # by result id, rather than with ids to fetch separately.
+            "listings": list((result.get("result") or {}).values())
+            if isinstance(result.get("result"), dict)
+            else (result.get("result") or []),
+        }
+
+    def exchange_url(self, search_id: str, league: str | None = None) -> str:
+        league = league or self.league()
+        return f"{self.base_url}/trade/exchange/{_quote(league)}/{search_id}"
 
     def fetch(self, ids: list[str], search_id: str) -> list[dict]:
         """Listings for up to 10 result ids -- the site's own page size."""

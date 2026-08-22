@@ -239,6 +239,7 @@ class App(ctk.CTk):
         self._price_window = None
         self._whisper_panel = None
         self._trade_api = None
+        self._data_checked = False
 
         toast.bind_root(self)
 
@@ -1803,9 +1804,17 @@ class App(ctk.CTk):
         return self._trade_api
 
     def open_price_check(self, clipboard_text: str) -> None:
-        from ..trade import item as trade_item
+        from ..trade import gamedata, item as trade_item
         from .price_window import PriceCheckWindow
 
+        if gamedata.load() is None:
+            # Without it nothing can be read: the labels the client prints
+            # and the modifier list both live in those files.
+            toast.show(
+                "게임 데이터를 찾을 수 없습니다.\n"
+                "tools/update_trade_data.py 를 실행해주세요."
+            )
+            return
         parsed = trade_item.parse(clipboard_text)
         if parsed is None:
             toast.show("아이템 정보를 읽지 못했습니다.\n아이템 위에서 다시 시도해주세요.")
@@ -1819,6 +1828,50 @@ class App(ctk.CTk):
             existing.close()
         self._price_window = PriceCheckWindow(self, self.config, self.trade_api(), parsed)
         self._ensure_league()
+        self._ensure_game_data()
+
+    def preload_game_data(self) -> None:
+        """Read the price check's game data before anything asks for it.
+
+        Also the moment the weekly freshness check happens, so a stale copy
+        is replaced during a quiet part of the session rather than in the
+        middle of pricing something.
+        """
+        def work() -> None:
+            from ..trade import gamedata
+
+            try:
+                gamedata.load()
+            except Exception:
+                logger.debug("게임 데이터 미리 읽기 실패", exc_info=True)
+
+        threading.Thread(target=work, name="gamedata-preload", daemon=True).start()
+        self._ensure_game_data()
+
+    def _ensure_game_data(self) -> None:
+        """Keep the bundled modifier and base-type data current.
+
+        On a thread and at most once a session: a league adds modifiers, and
+        a copy of the data frozen at build time slowly loses the ability to
+        read the items people most want priced. Costs nothing on the weeks
+        when the copy on disk is already recent -- gamedata.refresh checks
+        its age before asking GitHub anything.
+        """
+        if self._data_checked:
+            return
+        self._data_checked = True
+        if not self.config.data.get("trade", {}).get("auto_update_data", True):
+            return
+
+        def update() -> None:
+            from ..trade import gamedata
+
+            try:
+                gamedata.refresh()
+            except Exception:
+                logger.debug("게임 데이터 갱신 중 오류", exc_info=True)
+
+        threading.Thread(target=update, name="gamedata-refresh", daemon=True).start()
 
     def _ensure_league(self) -> None:
         """Fill in a blank league setting from the site's own list.
