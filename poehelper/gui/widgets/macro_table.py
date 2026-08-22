@@ -13,6 +13,7 @@ Sending Enter into those is at best wrong and at worst destructive.
 the identity of the row, and combo selection covers binding needs.)"""
 from __future__ import annotations
 
+import tkinter as tk
 from typing import Callable
 
 import customtkinter as ctk
@@ -30,6 +31,10 @@ _CHAT_COL_WIDTH = 72
 # the checkbox's holder needs telling, but it has to agree with them or it
 # sets the height of the whole row.
 _ROW_HEIGHT = 28
+# The heading strip. Fixed, because its two right-hand labels are placed
+# rather than packed and so contribute nothing to the frame's own size --
+# and an unsized CTkFrame asks for 200px.
+_HEADER_HEIGHT = 22
 
 
 class MacroTableEditor(ctk.CTkFrame):
@@ -44,17 +49,30 @@ class MacroTableEditor(ctk.CTkFrame):
         self.on_change = on_change
         self.rows: list[dict] = []
 
-        header = ctk.CTkFrame(self, fg_color="transparent")
-        header.pack(fill="x")
-        ctk.CTkLabel(header, text="채팅 문구").pack(side="left", padx=(0, 4))
-        ctk.CTkLabel(header, text="단축키", width=180).pack(side="right", padx=(4, 34))
+        # The two right-hand headings are positioned from the widgets they
+        # label rather than packed at a guessed width. Packing them meant
+        # repeating the rows' widths here -- 180 for the hotkey picker, 34 to
+        # clear the delete button -- and every one of those numbers was
+        # wrong: the picker is 271 wide, so both headings sat about a hundred
+        # pixels right of the column they named. Reading the real geometry
+        # cannot drift, and re-runs whenever the window is resized.
+        self.header = ctk.CTkFrame(self, fg_color="transparent", height=_HEADER_HEIGHT)
+        self.header.pack(fill="x")
+        self.header.pack_propagate(False)
+        ctk.CTkLabel(self.header, text="채팅 문구").pack(side="left", padx=(0, 4))
         # Named for what ticking it does rather than for the thing it is
         # about: "채팅" over a column of checkboxes says nothing about which
         # way is which, and this is the only control here whose two states do
         # visibly different things to the game.
-        ctk.CTkLabel(header, text="ENTER 필요", width=_CHAT_COL_WIDTH).pack(
-            side="right", padx=(4, 0)
+        # Sized on construction, not in place(): CustomTkinter rejects width
+        # and height as place() arguments outright.
+        self.chat_head = ctk.CTkLabel(
+            self.header, text="ENTER 필요", width=_CHAT_COL_WIDTH, height=_HEADER_HEIGHT
         )
+        self.key_head = ctk.CTkLabel(
+            self.header, text="단축키", width=_CHAT_COL_WIDTH, height=_HEADER_HEIGHT
+        )
+        self.header.bind("<Configure>", lambda _e: self._align_headers())
 
         self.scroll = ctk.CTkScrollableFrame(self, height=280)
         self.scroll.pack(fill="both", expand=True)
@@ -119,6 +137,7 @@ class MacroTableEditor(ctk.CTkFrame):
         )
         chat_cell.pack(side="left", padx=(0, 4))
         chat_cell.pack_propagate(False)
+        entry["chat_cell"] = chat_cell
         chat_box = ctk.CTkCheckBox(
             chat_cell, text="", width=18,
             variable=chat_var, checkbox_width=18, checkbox_height=18,
@@ -153,6 +172,40 @@ class MacroTableEditor(ctk.CTkFrame):
 
         self.rows.append(entry)
         text_var.trace_add("write", lambda *_: (self._refresh_tooltip(entry), self._notify()))
+        # The first row is what the headings measure themselves against, so a
+        # list that was empty until now has to re-align.
+        self.after_idle(self._align_headers)
+
+    def _align_headers(self) -> None:
+        """Put each right-hand heading over the column it names.
+
+        Measured off the first row rather than reproduced from constants,
+        because the two are laid out by different code: the row packs a
+        checkbox holder and a HotkeyPicker, and only the picker knows how
+        wide it is. Positions are converted through screen coordinates since
+        the heading and the row sit in different parents -- the rows are
+        inside a scrollable frame with padding of its own.
+        """
+        if not self.rows:
+            # Nothing to line up with, and a heading over an empty list names
+            # nothing.
+            self.chat_head.place_forget()
+            self.key_head.place_forget()
+            return
+        first = self.rows[0]
+        try:
+            origin = self.header.winfo_rootx()
+            for label, widget in (
+                (self.chat_head, first["chat_cell"]),
+                (self.key_head, first["picker"]),
+            ):
+                width = widget.winfo_width()
+                if width <= 1:
+                    return  # not laid out yet; the next <Configure> will do it
+                label.configure(width=width)
+                label.place(x=widget.winfo_rootx() - origin, y=0)
+        except tk.TclError:
+            pass  # widget destroyed mid-layout
 
     def _refresh_tooltip(self, entry: dict) -> None:
         text = entry["text"].get().strip()
@@ -170,6 +223,7 @@ class MacroTableEditor(ctk.CTkFrame):
         entry["row"].destroy()
         self.rows.remove(entry)
         self._notify()
+        self.after_idle(self._align_headers)
 
     def _repack(self) -> None:
         """Re-lay the rows in ``self.rows`` order.
