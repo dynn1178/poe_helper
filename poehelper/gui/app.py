@@ -7,6 +7,7 @@ import contextlib
 import logging
 import os
 import threading
+import time
 import tkinter as tk
 from datetime import datetime
 from tkinter import colorchooser, filedialog, messagebox
@@ -24,13 +25,14 @@ from ..config import (
 from ..hotkeys import suspend as hotkey_suspend
 from ..hotkeys.actions import GameActions
 from ..hotkeys.manager import HotkeyManager
-from . import render, theme
+from . import ime, render, theme
 from .detect_test import DetectTestWindow
 from .layout_window import LayoutWindow
 from .memo_tab import MemoTab
 from .regex_tab import RegexTab
 from .route_window import RouteWindow
 from .update_dialog import UpdateDialog
+from .widgets.dismiss import mouse_button_down
 from .widgets.hotkey_picker import HotkeyPicker
 from .widgets.link_list_editor import LinkListEditor
 from .widgets.macro_table import MacroTableEditor
@@ -207,6 +209,18 @@ def _readable_on(hex_colour: str) -> str:
     return "#000000" if (0.299 * r + 0.587 * g + 0.114 * b) > 150 else "#ffffff"
 
 
+# When the visible tab is laid out again after a resize -- see
+# App._freeze_tab_layout. The window has to have held still for
+# _SETTLE_SEC, *and* the mouse button has to be up, because one step of the
+# relayout on a heavy tab costs about a second and a plain quiet-period
+# timer expires during it -- so a timer alone would thaw and re-freeze on
+# every frame of the drag, which is the thing being avoided.
+# _DRAG_HOLD_SEC is the ceiling on trusting the button: a button held for
+# some other reason must not pin the tab indefinitely.
+_SETTLE_POLL_MS = 60
+_SETTLE_SEC = 0.14
+_DRAG_HOLD_SEC = 1.5
+
 _AUTOCLICK_HELP = (
     "지정한 키를 누르고 있는 동안 15ms 간격으로 좌클릭을 반복합니다.\n\n"
     "• 반드시 인벤토리/보관함 안에서만 사용하세요. 일반 필드에서 쓰면 입력 과다로 "
@@ -236,6 +250,13 @@ class App(ctk.CTk):
         # the named fonts, and CustomTkinter ones from ThemeManager. Both have
         # to say 맑은 고딕 or the two families appear side by side.
         theme.apply_tk_fonts(self)
+        # And the Korean IME composes in the same face as the box it is
+        # typing into -- Tk sets the composition window's position but never
+        # its font, so the syllable still being assembled came up in a system
+        # fallback and changed shape when it was committed. Bound by widget
+        # class, so this one call covers the overlays and the price window
+        # too. See gui/ime.py.
+        ime.install(self)
         self.config = config
         self.hotkey_manager = hotkey_manager
         self.actions = actions
@@ -295,6 +316,12 @@ class App(ctk.CTk):
         for name in self._tab_builders:
             self.tabs.add(name)
         self._built_tabs: set[str] = set()
+        self._tab_containers: dict[str, ctk.CTkFrame] = {}
+        # Resize bookkeeping -- see _on_configure / _freeze_tab_layout.
+        self._window_size: tuple[int, int] | None = None
+        self._frozen_container: ctk.CTkFrame | None = None
+        self._settle_job: str | None = None
+        self._last_resize_at = 0.0
 
         self._build_bottom_bar()
 
@@ -356,6 +383,9 @@ class App(ctk.CTk):
         underneath the visible one (see ``_tab_sized_for_layout``)
         reshuffles. Dropping the others right away makes the switch a
         single clean repaint instead."""
+        # A tab arriving mid-drag would otherwise be laid out inside a
+        # pinned container and come up the size the *old* window was.
+        self._thaw_tab_layout()
         for other in self._tab_builders:
             if other != name:
                 self.tabs.tab(other).grid_forget()
@@ -384,6 +414,10 @@ class App(ctk.CTk):
             # screenshotting the game-hotkey tab built this way.
             self.tabs.update_idletasks()
             container = ctk.CTkFrame(tab, fg_color="transparent")
+            # Kept, because it is the single widget that stands between the
+            # window's edge and everything on the tab -- which makes it the
+            # one place a resize can be stopped. See _freeze_tab_layout.
+            self._tab_containers[name] = container
             self._tab_builders[name](container)
             # Packed only now: Tk lays out and paints nothing for an
             # unmapped subtree, so the whole tab lands in one paint instead
@@ -2133,9 +2167,97 @@ class App(ctk.CTk):
         else:
             self.destroy()
 
-    def _on_configure(self, _event: tk.Event) -> None:
+    def _on_configure(self, event: tk.Event) -> None:
         pos = self.config.data["windows"]["main"]
         pos["x"], pos["y"] = self.winfo_x(), self.winfo_y()
+        # Every widget's bindtags include its toplevel's, so this fires for
+        # each child's <Configure> as well as the window's own. Only the
+        # window's own is a resize.
+        if event.widget is not self:
+            return
+        size = (event.width, event.height)
+        if size == self._window_size:
+            return  # a move, not a resize
+        first = self._window_size is None
+        self._window_size = size
+        if first:
+            # The window being given its size for the first time, during
+            # __init__ and behind alpha 0. Nothing to defer, and pinning the
+            # tab here would only risk revealing it at a stale size.
+            return
+        self._last_resize_at = time.monotonic()
+        self._freeze_tab_layout()
+        if self._settle_job is None:
+            self._settle_job = self.after(_SETTLE_POLL_MS, self._settle_check)
+
+    # ---- resize: lay the tab out once, when the drag stops ----------------
+    def _settle_check(self) -> None:
+        """Is the drag over yet?"""
+        self._settle_job = None
+        if self._frozen_container is None:
+            return
+        quiet = time.monotonic() - self._last_resize_at
+        dragging = quiet < _DRAG_HOLD_SEC and mouse_button_down()
+        if dragging or quiet < _SETTLE_SEC:
+            self._settle_job = self.after(_SETTLE_POLL_MS, self._settle_check)
+            return
+        self._thaw_tab_layout()
+
+    def _freeze_tab_layout(self) -> None:
+        """Pin the visible tab's content at its current size for the drag.
+
+        Dragging an edge is not one resize, it is one per frame Windows can
+        deliver, and Tk answers each by walking the whole widget tree: every
+        geometry manager re-runs, every widget whose width changed moves its
+        real HWND, and CustomTkinter then repaints that widget's private
+        canvas. Measured on this window, one step of that costs ~1.3s on the
+        맵모드 tab (1044 widgets) and ~1.0s on 게임 단축키 -- so the drag ran
+        at well under one frame a second and the tab visibly re-assembled
+        itself the whole way.
+
+        None of that work is worth doing at an intermediate size, because
+        nobody reads a tab mid-drag. So the content container -- the one
+        widget between the window edge and everything on the tab -- stops
+        following the window: fixed size, propagation off. The window and
+        the tab strip still resize live (they are a handful of widgets); the
+        content underneath simply holds its old size, leaving a margin at
+        the edge for as long as the mouse is moving, and is laid out once
+        when it stops. Same total work, paid once instead of per frame:
+        ~1.3s -> ~0.35s per step on 맵모드.
+
+        Applies to whichever tab is showing, so every tab gets it.
+        """
+        if self._frozen_container is not None:
+            return
+        container = self._tab_containers.get(self.tabs.get())
+        if container is None or not container.winfo_ismapped():
+            return
+        self._frozen_container = container
+        with contextlib.suppress(tk.TclError):
+            container.configure(
+                width=container.winfo_width(), height=container.winfo_height()
+            )
+            container.pack_propagate(False)
+            container.pack_configure(fill="none", expand=False, anchor="nw")
+
+    def _thaw_tab_layout(self) -> None:
+        """Give the content the window back, and lay it out for real.
+
+        Held by identity rather than looked up again from the current tab:
+        a tab switch can land between the freeze and the thaw, and thawing
+        whatever happens to be on screen then would leave the tab that was
+        actually pinned stuck at a stale size forever.
+        """
+        if self._settle_job is not None:
+            with contextlib.suppress(tk.TclError):
+                self.after_cancel(self._settle_job)
+            self._settle_job = None
+        container, self._frozen_container = self._frozen_container, None
+        if container is None:
+            return
+        with contextlib.suppress(tk.TclError):
+            container.pack_propagate(True)
+            container.pack_configure(fill="both", expand=True)
 
     def show_from_tray(self) -> None:
         # Same reveal-once-painted trick as startup: withdraw() unmaps every

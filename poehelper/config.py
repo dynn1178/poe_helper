@@ -83,7 +83,7 @@ DEFAULT_HOTKEYS = {
     "price_check": "alt+d",
     # Next to the price check, and for the same kind of moment: the item is
     # under the cursor and the question is whether to keep it.
-    "map_regex_check": "alt+q",
+    "map_regex_check": "alt+a",
 }
 
 # Grid dimensions of each clickable game area, in cells. The pickers draw

@@ -116,6 +116,12 @@ _TOTALS_ON = frozenset(
 
 SORT_OPTIONS = [("indexed", "최근 등록순"), ("price", "가격 낮은순")]
 
+# Disclosure marks for the 상세 조건 fold. Triangles rather than +/-: they say
+# which way the panel is about to move, which is the whole job of the glyph.
+# The large forms (U+25B6/U+25BC), not the small ones -- 맑은 고딕 draws
+# U+25B8 at about three pixels, which reads as a bullet, not as a direction.
+_CLOSED_MARK, _OPEN_MARK = "▶", "▼"
+
 # ---------------------------------------------------------------------------
 # "click anywhere else and it goes away"
 # ---------------------------------------------------------------------------
@@ -601,12 +607,27 @@ class PriceCheckWindow(ctk.CTkToplevel):
         buyer cares that this one is corrupted, or would take one with 40
         less armour, depends on why they are pricing it. So the window seeds
         every box from the item and then gets out of the way.
+
+        Getting out of the way now includes not being on screen. Every one of
+        these is already seeded from the item, and on the overwhelming
+        majority of checks not one of them is touched before the answer is
+        read -- so a dozen-odd typed boxes and dropdowns were paying for
+        themselves in vertical space on every single price check, pushing the
+        listings (the thing the window is for) below the fold. They start
+        folded away behind 상세 조건 and come back exactly as they were.
+
+        거래 and 등록 stay out: they are two clicks that change what the
+        search *means* rather than which items qualify, and they are the pair
+        people actually reach for.
         """
         self.filter_vars: dict[str, ctk.StringVar] = {}
         self.num_vars: dict[str, ctk.StringVar] = {}
         self.group_of: dict[str, str] = {}
+
+        self._build_filter_bar()
         wrap = ctk.CTkFrame(self.card, fg_color="transparent")
-        wrap.pack(fill="x", padx=12, pady=(0, 4))
+        self._detail = wrap
+        self._detail_open = False
 
         # grid, not pack: the dropdowns and their labels do not fit one row at
         # this width, and pack answered that by silently shaving the labels
@@ -663,14 +684,6 @@ class PriceCheckWindow(ctk.CTkToplevel):
                 TRISTATE_CHOICES, initial, 82,
             )
 
-        last = first + (len(offered) + 2) // 3
-        trade = self.app_config.data.get("trade", {})
-        self.status_var = self._option(
-            wrap, last, 0, "거래", STATUS_OPTIONS, trade.get("status", "available"), 176
-        )
-        self.indexed_var = self._option(
-            wrap, last, 2, "등록", INDEXED_OPTIONS, trade.get("indexed", "1week"), 110
-        )
         # Taken after every widget exists, so 초기화 restores exactly what the
         # window opened with rather than a second copy of the defaults.
         # A list of pairs, not a dict: tkinter Variables define __eq__ and
@@ -682,6 +695,63 @@ class PriceCheckWindow(ctk.CTkToplevel):
                 self.status_var, self.indexed_var,
             )
         ]
+        self._refresh_detail_button()
+
+    def _build_filter_bar(self) -> None:
+        """The one filter row that is always on screen.
+
+        The disclosure sits on the left of it rather than on its own line,
+        so folding the detail away costs nothing back in chrome.
+        """
+        bar = ctk.CTkFrame(self.card, fg_color="transparent")
+        bar.pack(fill="x", padx=12, pady=(0, 2))
+        self._detail_button = ctk.CTkButton(
+            bar, text=f"{_CLOSED_MARK} 상세 조건", width=92, height=26,
+            font=self.font_small, command=self._toggle_detail,
+            fg_color=theme.OVERLAY_SURFACE_2, hover_color=theme.OVERLAY_ACCENT_HOVER,
+            text_color=theme.OVERLAY_TEXT,
+        )
+        self._detail_button.pack(side="left")
+
+        trade = self.app_config.data.get("trade", {})
+        self.status_var = self._packed_option(
+            bar, "거래", STATUS_OPTIONS, trade.get("status", "available"), 164
+        )
+        self.indexed_var = self._packed_option(
+            bar, "등록", INDEXED_OPTIONS, trade.get("indexed", "1week"), 96
+        )
+
+    def _toggle_detail(self) -> None:
+        """Fold the typed boxes in and out, in place.
+
+        ``before=`` rather than a re-pack of everything under it: the detail
+        block belongs between the always-on row and the buttons, and pack
+        appends to the end of the parent otherwise -- which put it below the
+        results list.
+        """
+        self._detail_open = not self._detail_open
+        if self._detail_open:
+            self._detail.pack(
+                fill="x", padx=12, pady=(0, 4), before=self._actions_bar
+            )
+        else:
+            self._detail.pack_forget()
+        self._refresh_detail_button()
+
+    def _refresh_detail_button(self) -> None:
+        """Say how many folded-away boxes are actually doing something.
+
+        Several of them are seeded from the item -- a 20% gem, a 6-link, a
+        weapon's DPS -- so "hidden" must not mean "not in the search". The
+        count on the button is what keeps a narrowed search from looking like
+        a default one; with the block open the boxes speak for themselves and
+        the number comes off.
+        """
+        active = sum(1 for var in self.num_vars.values() if var.get().strip())
+        active += sum(1 for var in self.filter_vars.values() if _chosen(var))
+        mark = _OPEN_MARK if self._detail_open else _CLOSED_MARK
+        suffix = "" if self._detail_open or not active else f" · {active}"
+        self._detail_button.configure(text=f"{mark} 상세 조건{suffix}")
 
     def _cell(self, parent, row: int, index: int, label: str) -> None:
         ctk.CTkLabel(
@@ -691,24 +761,40 @@ class PriceCheckWindow(ctk.CTkToplevel):
 
     def _option(self, parent, row, index, label, choices, initial, width) -> ctk.StringVar:
         self._cell(parent, row, index, label)
+        var, menu = self._option_menu(parent, choices, initial, width)
+        menu.grid(row=row, column=index * 2 + 1, sticky="w", pady=2)
+        return var
+
+    def _packed_option(self, parent, label, choices, initial, width) -> ctk.StringVar:
+        ctk.CTkLabel(
+            parent, text=label, font=self.font_small, anchor="e",
+            text_color=theme.OVERLAY_TEXT_DIM,
+        ).pack(side="left", padx=(10, 4))
+        var, menu = self._option_menu(parent, choices, initial, width)
+        menu.pack(side="left")
+        return var
+
+    def _option_menu(self, parent, choices, initial, width):
         labels = [text for _value, text in choices]
         current = next((t for v, t in choices if v == initial), labels[0])
         var = ctk.StringVar(value=current)
-        ctk.CTkOptionMenu(
+        menu = ctk.CTkOptionMenu(
             parent, variable=var, values=labels, width=width, height=26, font=self.font_small,
             fg_color=theme.OVERLAY_SURFACE_2, button_color=theme.OVERLAY_ACCENT,
             button_hover_color=theme.OVERLAY_ACCENT_HOVER, text_color=theme.OVERLAY_TEXT,
             dropdown_fg_color=theme.OVERLAY_SURFACE, dropdown_hover_color=theme.OVERLAY_SURFACE_2,
             dropdown_text_color=theme.OVERLAY_TEXT, dropdown_font=self.font_small,
-        ).grid(row=row, column=index * 2 + 1, sticky="w", pady=2)
+        )
         # Stashed on the variable so _chosen can map the shown label back to
         # the id the site expects, without a second dict to keep in step.
         var._choices = choices  # type: ignore[attr-defined]
-        return var
+        return var, menu
 
     def _build_actions(self) -> None:
         bar = ctk.CTkFrame(self.card, fg_color="transparent")
         bar.pack(fill="x", padx=12, pady=(4, 8))
+        # Where the folded-away 상세 조건 block reappears -- see _toggle_detail.
+        self._actions_bar = bar
         button = dict(
             height=30, font=self.font, fg_color=theme.OVERLAY_ACCENT,
             hover_color=theme.OVERLAY_ACCENT_HOVER, text_color=theme.OVERLAY_TEXT,
@@ -786,6 +872,7 @@ class PriceCheckWindow(ctk.CTkToplevel):
             row.reset()
         for var, value in getattr(self, "_initial_state", []):
             var.set(value)
+        self._refresh_detail_button()
         self._set_status("검색 조건을 처음 상태로 되돌렸습니다.")
         self.search()
 
