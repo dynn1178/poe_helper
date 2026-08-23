@@ -220,6 +220,10 @@ def _readable_on(hex_colour: str) -> str:
 _SETTLE_POLL_MS = 60
 _SETTLE_SEC = 0.14
 _DRAG_HOLD_SEC = 1.5
+# Gap between the covered tabs' relayouts once the front one is done. Long
+# enough that a click or a hotkey lands in between, short enough that they
+# are all caught up before anyone can click through eight tabs.
+_THAW_STEP_MS = 30
 
 _AUTOCLICK_HELP = (
     "지정한 키를 누르고 있는 동안 15ms 간격으로 좌클릭을 반복합니다.\n\n"
@@ -286,7 +290,11 @@ class App(ctk.CTk):
         # no way to reach them.
         self.geometry(f"780x680+{pos.get('x', 100)}+{pos.get('y', 100)}")
 
-        self.tabs = ctk.CTkTabview(self, command=self._on_tab_selected)
+        # No command= here: the tabview only ever fires it from the
+        # segmented-button callback, and that callback is replaced wholesale
+        # in _make_tabs_permanent (it unmaps the outgoing tab, which is the
+        # thing being avoided). The click is wired there instead.
+        self.tabs = ctk.CTkTabview(self)
         self.tabs.pack(fill="both", expand=True, padx=8, pady=(8, 0))
 
         # Only the first tab is built here; the rest are filled in from the
@@ -319,13 +327,20 @@ class App(ctk.CTk):
         self._tab_containers: dict[str, ctk.CTkFrame] = {}
         # Resize bookkeeping -- see _on_configure / _freeze_tab_layout.
         self._window_size: tuple[int, int] | None = None
-        self._frozen_container: ctk.CTkFrame | None = None
+        self._pinned: dict[str, ctk.CTkFrame] = {}
         self._settle_job: str | None = None
+        self._thaw_job: str | None = None
         self._last_resize_at = 0.0
 
+        self._make_tabs_permanent()
         self._build_bottom_bar()
+        # Tab moves focus only between things that are actually on screen --
+        # which, now that every tab stays mapped, Tk can no longer work out
+        # by itself. See _focus_ring.
+        self.bind("<Tab>", lambda _e: self._traverse_focus(1))
+        self.bind("<Shift-Tab>", lambda _e: self._traverse_focus(-1))
 
-        self._ensure_tab(next(iter(self._tab_builders)))
+        self._reveal_tab(next(iter(self._tab_builders)))
 
         # X closes the program, rather than hiding it in the tray. Hiding is
         # what a titlebar X does in a few background utilities and it is
@@ -372,24 +387,63 @@ class App(ctk.CTk):
         # hotkeys in between instead of freezing for the whole batch.
         self.after(60, self._build_next_pending_tab)
 
+    # ---- tab switching: one raise, not a rebuild --------------------------
+    def _make_tabs_permanent(self) -> None:
+        """Leave every tab mapped, and switch between them by stacking order.
+
+        ``CTkTabview`` shows a tab by gridding it and hides the rest with
+        ``grid_forget``. On Windows every Tk widget is a real HWND, so one
+        switch is a ``ShowWindow`` for each of the outgoing tab's widgets and
+        another for each of the incoming one's -- a couple of thousand calls
+        for the heavier tabs -- and Windows paints them as they arrive,
+        against whatever the old tab left on screen. That is the "widgets
+        loading in one at a time" shimmer: nothing is being rebuilt, the map
+        cascade is simply being drawn as it happens.
+
+        All nine tabs are built up front anyway (see
+        ``_build_next_pending_tab``), so none of that unmapping buys
+        anything. They are gridded into the tabview's one content cell
+        together and left there; switching is ``lift()`` -- a single Z-order
+        change on a single window, with the entire subtree along for the
+        ride. Nothing to map, nothing to lay out, nothing to build.
+
+        Two places in the library undo that and both are neutralised here:
+        the deferred sweep ``set()`` schedules 100ms later, and the
+        ``grid_forget`` the segmented button's own callback does on the
+        outgoing tab.
+        """
+        tabs = self.tabs
+        keep = tabs._current_name
+        for name in self._tab_builders:
+            # Through the tabview's own method, so the padding it derives
+            # from corner_radius/border_width stays defined in one place.
+            tabs._current_name = name
+            tabs._set_grid_current_tab()
+        tabs._current_name = keep
+        tabs._grid_forget_all_tabs = lambda exclude_name=None: None
+        tabs._segmented_button.configure(command=self._on_tab_button)
+
+    def _on_tab_button(self, name: str) -> None:
+        """Replaces ``CTkTabview._segmented_button_callback``.
+
+        Same work minus the ``grid_forget`` of the outgoing tab. The
+        original is bound into the segmented button at construction time, so
+        it has to be swapped out there rather than overridden on the tabview.
+        """
+        self.tabs._current_name = name
+        self._on_tab_selected()
+
     def _on_tab_selected(self) -> None:
         self._reveal_tab(self.tabs.get())
 
     def _reveal_tab(self, name: str) -> None:
-        """``CTkTabview.set()`` leaves the previously shown tab gridded in
-        the same cell for another 100ms (it defers the ``grid_forget`` via
-        ``after``), so for that window two tabs overlap and which one you
-        see comes down to stacking order -- which pre-building tabs
-        underneath the visible one (see ``_tab_sized_for_layout``)
-        reshuffles. Dropping the others right away makes the switch a
-        single clean repaint instead."""
-        # A tab arriving mid-drag would otherwise be laid out inside a
-        # pinned container and come up the size the *old* window was.
-        self._thaw_tab_layout()
-        for other in self._tab_builders:
-            if other != name:
-                self.tabs.tab(other).grid_forget()
+        """Bring a tab to the front. Built and mapped already, so: a raise."""
         self._ensure_tab(name)
+        # A resize may have left this one pinned at the old window size (see
+        # _freeze_tab_layout); it is about to be looked at, so it goes first.
+        self._unpin_tab(name)
+        with contextlib.suppress(tk.TclError):
+            self.tabs.tab(name).lift()
 
     def _ensure_tab(self, name: str) -> None:
         """Build ``name``'s content the first time it is needed.
@@ -399,69 +453,93 @@ class App(ctk.CTk):
         unmapped subtree, so a tab's whole contents land in a single paint
         instead of the rows visibly filling in one by one as they're
         created.
+
+        The tab frame it goes into is already gridded and already the right
+        size, which is what a ``CTkScrollableFrame`` needs to lay its inner
+        canvas out correctly -- one built inside an un-gridded (1x1) frame
+        comes out permanently mislaid. That used to need a grid-it-just-for
+        -the-build dance; ``_make_tabs_permanent`` makes it true for free.
         """
         if name in self._built_tabs:
             return
         self._built_tabs.add(name)
 
         tab = self.tabs.tab(name)
-        with self._tab_sized_for_layout(tab):
-            # Tab geometry has to be real *while* the content is built:
-            # a CTkScrollableFrame sizes its inner canvas from the space it
-            # is given, and one built inside an un-gridded (1x1) tab frame
-            # comes out permanently mislaid -- rows scattered at the wrong
-            # offsets, most of the list not drawn at all. Confirmed by
-            # screenshotting the game-hotkey tab built this way.
-            self.tabs.update_idletasks()
-            container = ctk.CTkFrame(tab, fg_color="transparent")
-            # Kept, because it is the single widget that stands between the
-            # window's edge and everything on the tab -- which makes it the
-            # one place a resize can be stopped. See _freeze_tab_layout.
-            self._tab_containers[name] = container
-            self._tab_builders[name](container)
-            # Packed only now: Tk lays out and paints nothing for an
-            # unmapped subtree, so the whole tab lands in one paint instead
-            # of its rows visibly filling in one by one as they're created.
-            container.pack(fill="both", expand=True)
-            self.tabs.update_idletasks()
-
-    @contextlib.contextmanager
-    def _tab_sized_for_layout(self, tab: ctk.CTkFrame):
-        """Temporarily give a not-currently-selected tab frame real
-        dimensions, by gridding it into the same cell as the visible tab and
-        stacking it underneath. The visible tab covers the same cell exactly,
-        so nothing of the one being built is ever on screen."""
-        current = self.tabs.tab(self.tabs.get())
-        if tab is current:
-            yield
-            return
-        info = current.grid_info()
-        tab.grid(
-            row=info["row"], column=info["column"], sticky=info["sticky"],
-            padx=info["padx"], pady=info["pady"],
-        )
-        tab.lower(current)
-        try:
-            yield
-            # Pay this tab's first paint here, while it's still covered.
-            # Building the widgets isn't the whole cost -- CustomTkinter
-            # renders each one onto its own canvas, and that only happens
-            # the first time the tab is actually mapped. Without this the
-            # cost just moved to the first click on the tab (~0.6s for the
-            # game-hotkey list, visibly filling in), instead of being spent
-            # invisibly up front. update_idletasks() rather than update():
-            # it flushes the paint without processing user input, so a
-            # click landing mid-prebuild can't re-enter this.
-            self.update_idletasks()
-        finally:
-            tab.grid_forget()
+        self.tabs.update_idletasks()
+        container = ctk.CTkFrame(tab, fg_color="transparent")
+        # Kept, because it is the single widget that stands between the
+        # window's edge and everything on the tab -- which makes it the
+        # one place a resize can be stopped. See _freeze_tab_layout.
+        self._tab_containers[name] = container
+        self._tab_builders[name](container)
+        # Packed only now: Tk lays out and paints nothing for an unmapped
+        # subtree, so the whole tab lands in one paint instead of its rows
+        # visibly filling in one by one as they're created.
+        container.pack(fill="both", expand=True)
+        # Whichever tab is on top stays on top -- a tab built in the
+        # background must not surface over the one being looked at.
+        with contextlib.suppress(tk.TclError):
+            self.tabs.tab(self.tabs.get()).lift()
+        # Pay this tab's first paint here, while it is still covered.
+        # Building the widgets isn't the whole cost: CustomTkinter renders
+        # each one onto its own canvas, and without this that cost just
+        # moves to the first click on the tab. update_idletasks() rather
+        # than update() -- it flushes the paint without processing user
+        # input, so a click landing mid-prebuild can't re-enter this.
+        self.update_idletasks()
 
     def _show_tab(self, name: str) -> None:
         """Switch to a tab from code. ``CTkTabview.set()`` bypasses the
-        segmented button's callback, so the lazy build has to be triggered
-        explicitly here."""
+        segmented button's callback, so the raise has to be done here."""
         self.tabs.set(name)
         self._reveal_tab(name)
+
+    # ---- keyboard traversal -----------------------------------------------
+    def _focus_ring(self) -> list[str]:
+        """The widgets Tab should visit, in tree order.
+
+        Tk's own ``tk_focusNext`` walks the whole window and skips only what
+        is not *viewable* -- and a tab that is merely covered by another one
+        still is. So the tabs that are not on top are skipped explicitly
+        here; everything else (the tab strip, the bottom bar) is left in,
+        exactly as Tk had it when the hidden tabs were unmapped.
+        """
+        current = self.tabs.get()
+        hidden = {
+            str(self.tabs.tab(name))
+            for name in self._tab_builders
+            if name != current
+        }
+        ring: list[str] = []
+
+        def walk(widget) -> None:
+            for child in widget.winfo_children():
+                path = str(child)
+                if path in hidden:
+                    continue
+                with contextlib.suppress(tk.TclError, ValueError):
+                    if self.tk.getboolean(self.tk.call("::tk::FocusOK", path)):
+                        ring.append(path)
+                walk(child)
+
+        walk(self)
+        return ring
+
+    def _traverse_focus(self, step: int) -> str | None:
+        ring = self._focus_ring()
+        if not ring:
+            return None
+        try:
+            current = str(self.focus_get())
+        except (KeyError, tk.TclError):
+            current = ""
+        if current in ring:
+            target = ring[(ring.index(current) + step) % len(ring)]
+        else:
+            target = ring[0 if step > 0 else -1]
+        with contextlib.suppress(tk.TclError):
+            self.tk.call("focus", target)
+        return "break"
 
     # ---- tab: 채팅 매크로 -----------------------------------------------
     def _build_macro_tab(self, tab: ctk.CTkFrame) -> None:
@@ -2190,11 +2268,11 @@ class App(ctk.CTk):
         if self._settle_job is None:
             self._settle_job = self.after(_SETTLE_POLL_MS, self._settle_check)
 
-    # ---- resize: lay the tab out once, when the drag stops ----------------
+    # ---- resize: lay the tabs out once, when the drag stops ---------------
     def _settle_check(self) -> None:
         """Is the drag over yet?"""
         self._settle_job = None
-        if self._frozen_container is None:
+        if not self._pinned:
             return
         quiet = time.monotonic() - self._last_resize_at
         dragging = quiet < _DRAG_HOLD_SEC and mouse_button_down()
@@ -2204,7 +2282,7 @@ class App(ctk.CTk):
         self._thaw_tab_layout()
 
     def _freeze_tab_layout(self) -> None:
-        """Pin the visible tab's content at its current size for the drag.
+        """Pin every tab's content at its current size for the drag.
 
         Dragging an edge is not one resize, it is one per frame Windows can
         deliver, and Tk answers each by walking the whole widget tree: every
@@ -2213,51 +2291,72 @@ class App(ctk.CTk):
         canvas. Measured on this window, one step of that costs ~1.3s on the
         맵모드 tab (1044 widgets) and ~1.0s on 게임 단축키 -- so the drag ran
         at well under one frame a second and the tab visibly re-assembled
-        itself the whole way.
+        itself the whole way. Now that every tab stays mapped
+        (``_make_tabs_permanent``) that bill is nine tabs wide, not one.
 
-        None of that work is worth doing at an intermediate size, because
-        nobody reads a tab mid-drag. So the content container -- the one
-        widget between the window edge and everything on the tab -- stops
+        None of it is worth paying at an intermediate size, because nobody
+        reads a tab mid-drag. So each tab's content container -- the single
+        widget between the window edge and everything on that tab -- stops
         following the window: fixed size, propagation off. The window and
-        the tab strip still resize live (they are a handful of widgets); the
-        content underneath simply holds its old size, leaving a margin at
-        the edge for as long as the mouse is moving, and is laid out once
-        when it stops. Same total work, paid once instead of per frame:
-        ~1.3s -> ~0.35s per step on 맵모드.
-
-        Applies to whichever tab is showing, so every tab gets it.
+        the tab strip still resize live (a handful of widgets); the content
+        underneath holds its old size, leaving a margin at the edge for as
+        long as the mouse is moving.
         """
-        if self._frozen_container is not None:
+        if self._pinned:
             return
-        container = self._tab_containers.get(self.tabs.get())
-        if container is None or not container.winfo_ismapped():
-            return
-        self._frozen_container = container
-        with contextlib.suppress(tk.TclError):
-            container.configure(
-                width=container.winfo_width(), height=container.winfo_height()
-            )
-            container.pack_propagate(False)
-            container.pack_configure(fill="none", expand=False, anchor="nw")
+        for name, container in self._tab_containers.items():
+            try:
+                if not container.winfo_ismapped():
+                    continue
+                container.configure(
+                    width=container.winfo_width(), height=container.winfo_height()
+                )
+                container.pack_propagate(False)
+                container.pack_configure(fill="none", expand=False, anchor="nw")
+            except tk.TclError:
+                continue
+            self._pinned[name] = container
 
     def _thaw_tab_layout(self) -> None:
-        """Give the content the window back, and lay it out for real.
+        """Lay the front tab out now; let the covered ones catch up after.
 
-        Held by identity rather than looked up again from the current tab:
-        a tab switch can land between the freeze and the thaw, and thawing
-        whatever happens to be on screen then would leave the tab that was
-        actually pinned stuck at a stale size forever.
+        The tab being looked at has to be right before the next frame. The
+        other eight are behind it and cannot be seen, so their relayout --
+        which is the expensive part, and eight times over -- is trickled out
+        one per callback instead of stalling the app for a second the moment
+        the mouse is released. Whichever one the user reaches first is
+        thawed on the spot by ``_reveal_tab``, so it can never be raised at
+        a stale size.
         """
         if self._settle_job is not None:
             with contextlib.suppress(tk.TclError):
                 self.after_cancel(self._settle_job)
             self._settle_job = None
-        container, self._frozen_container = self._frozen_container, None
+        if not self._pinned:
+            return
+        self._unpin_tab(self.tabs.get())
+        self._schedule_thaw()
+
+    def _unpin_tab(self, name: str) -> None:
+        """Let one tab's content follow the window again, and lay it out."""
+        container = self._pinned.pop(name, None)
         if container is None:
             return
         with contextlib.suppress(tk.TclError):
             container.pack_propagate(True)
             container.pack_configure(fill="both", expand=True)
+
+    def _schedule_thaw(self) -> None:
+        if self._thaw_job is not None or not self._pinned:
+            return
+        self._thaw_job = self.after(_THAW_STEP_MS, self._thaw_next)
+
+    def _thaw_next(self) -> None:
+        self._thaw_job = None
+        if not self._pinned:
+            return
+        self._unpin_tab(next(iter(self._pinned)))
+        self._schedule_thaw()
 
     def show_from_tray(self) -> None:
         # Same reveal-once-painted trick as startup: withdraw() unmaps every
